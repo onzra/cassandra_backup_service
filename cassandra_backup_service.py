@@ -656,7 +656,7 @@ class Cassandra(object):
 
     def __enumerate_cluster(self):
         """
-        Provide information about the cluster, such as the state, address, rack
+        Populate the cluster_data dict with state, address, and rack values per datacenter.
 
         :rtype: dict
         :return: Dictionary of hosts: [column families]
@@ -664,13 +664,12 @@ class Cassandra(object):
         return_code, out, error = run_command(['nodetool', 'status'], execute_during_dry_run=True)
         datacenter = None
         skiplines = [
-            '=======================',
             'Status=Up/Down',
             '|/ State=Normal/Leaving/Joining/Moving',
             '',
         ]
         for line in out.split("\n"):
-            if line in skiplines or line.startswith('-- ') or line.startswith('Note: '):
+            if line in skiplines or line.startswith('-- ') or line.startswith('===') or line.startswith('Note: '):
                 continue
             if line.startswith('Datacenter: '):
                 datacenter = line.split('Datacenter: ')[1]
