@@ -142,10 +142,18 @@ def run_command(cmd, execute_during_dry_run=False):
         logging.info('$ {0}'.format(' '.join(cmd)))
         if not execute_during_dry_run:
             return 0, '', ''
+
     p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     out, err = p.communicate()
+
     if p.returncode != 0:
-        raise Exception('Command {0} exited with code {1}. STDERR: "{2}"'.format(' '.join(cmd), p.returncode, err))
+        # AWS sync and copy commands may return exit code 2 with the following message:
+        # "warning: Skipping file <PATH>. File is character special device, block special device, FIFO, or socket."
+        # This is an outstanding old bug with no updates: https://github.com/aws/aws-cli/issues/1117
+        if p.returncode == 2 and (cmd[0] == 'aws' and cmd[1] in ('sync', 'cp')):
+            logger.warn('Command {0} exited with code {1}. STDERR: "{2}"'.format(' '.join(cmd), p.returncode, err))
+        else:
+            raise Exception('Command {0} exited with code {1}. STDERR: "{2}"'.format(' '.join(cmd), p.returncode, err))
     logging.debug('Run command: {0}'.format(cmd))
     logging.debug('Return code: {0}'.format(p.returncode))
     if out:
