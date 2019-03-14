@@ -31,7 +31,6 @@ import yaml
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
-logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s')
 
 CASSANDRA_CONFIG_FILE = '/etc/cassandra/conf/cassandra.yaml'
 DRY_RUN = False
@@ -1717,6 +1716,7 @@ if __name__ == '__main__':
                                      help='Instead of running commands, print simulated commands that would have run.')
             repo_parser.add_argument('--debug', action='store_true', default=False, dest='debug',
                                      help='Enable verbose DEBUG level logging.')
+            repo_parser.add_argument('--log-to-file', help='Redirect all logging to file. Output is not redirected.')
 
             if action == 'status':
                 repo_parser.add_argument('--restore-time', help='UTC timestamp in seconds to get status up to.')
@@ -1733,6 +1733,11 @@ if __name__ == '__main__':
 
     if args.debug:
         logger.setLevel(logging.DEBUG)
+
+    if args.log_to_file:
+        logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s', filename=args.log_to_file)
+    else:
+        logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s')
 
     if args.action in ('full', 'incremental'):
         cass = Cassandra(args)
