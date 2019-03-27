@@ -34,7 +34,6 @@ logger.setLevel(logging.INFO)
 
 CASSANDRA_CONFIG_FILE = '/etc/cassandra/conf/cassandra.yaml'
 DRY_RUN = False
-META_PATH = None
 TIME_FORMAT = '%Y-%m-%d %H:%M:%S'
 
 
@@ -486,7 +485,7 @@ class AWSBackupRepo(BaseBackupRepo):
         filename = '{0}_{1}.json'.format(host_id, timestamp)
 
         remote_path = '{0}/meta/{1}'.format(self.s3_bucket, filename)
-        local_path = '{mp}{fn}'.format(mp=META_PATH, fn=filename)
+        local_path = '{mp}{fn}'.format(mp=self.meta_path, fn=filename)
 
         cmd = ['aws', 's3', 'cp', remote_path, local_path]
         run_command(cmd)
