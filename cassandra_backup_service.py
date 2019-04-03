@@ -1624,10 +1624,10 @@ class BackupManager(object):
                 keyspace_status = host_status.add_keyspace_status(keyspace)
 
                 # Populate columnfamilies in keyspace.
-                for columnfamily in host_lists[host_id]['keyspaces'][keyspace]['tables']:
-                    uuid_string = keyspaces[keyspace]['tables'][columnfamily].replace('-', '')
-                    columnfamily_cfid = '{0}-{1}'.format(columnfamily, uuid_string)
-                    columnfamily_status = keyspace_status.add_columnfamily_status(columnfamily, columnfamily_cfid)
+                for table in host_lists[host_id]['keyspaces'][keyspace]['tables']:
+                    uuid_string = keyspaces[keyspace]['tables'][table].replace('-', '')
+                    columnfamily_cfid = '{0}-{1}'.format(table, uuid_string)
+                    columnfamily_status = keyspace_status.add_columnfamily_status(table, columnfamily_cfid)
 
         status_output_by_host = backup_status.status_output_by_host()
 
