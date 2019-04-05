@@ -360,7 +360,7 @@ class AWSBackupRepo(BaseBackupRepo):
             # TODO: error detection
             run_command(cmd)
 
-    def upload_incremental_backups(self, host_id, data_file_directory, incremental_directories):
+    def upload_incremental_backups(self, host_id, data_file_directory, columnfamily=None):
         """
         Upload incremental backups to S3 for all incremental_directories in provided provided data_file_directory.
 
@@ -374,9 +374,14 @@ class AWSBackupRepo(BaseBackupRepo):
         cmd.append(bucket)
         cmd.extend(['--exclude', '*'])
         #  Upload all column families backups
-        for incremental_directory in incremental_directories:
-            cmd.extend(['--include', '{0}/*'.format(incremental_directory)])
-            cmd.extend(['--exclude', '{0}/manifest.json'.format(incremental_directory)])
+        if columnfamily:
+            ks, cf = columnfamily.split('.')
+            cmd.extend(['--include', '{0}{1}/{2}*/backups/*'.format(data_file_directory, ks, cf)])
+        else:
+            cmd.extend(['--include', '{0}*/*/backups/*'.format(data_file_directory)])
+
+        # for incremental_directory in incremental_directories:
+            # cmd.extend(['--exclude', '{0}/manifest.json'.format(incremental_directory)])
 
         if self.s3_sse:
             cmd.append('--sse')
@@ -417,12 +422,7 @@ class AWSBackupRepo(BaseBackupRepo):
 
         cmd = []
         cmd.extend(['aws', 's3', 'sync', local_path, s3_path])
-        if manifest_files is None:
-            cmd.extend(['--exclude', '*', '--include', '*/*/meta/manifest.json'])
-        else:
-            cmd.extend(['--exclude', '*'])
-            for manifest_file_path in manifest_files:
-                cmd.extend(['--include', manifest_file_path])
+        cmd.extend(['--exclude', '*', '--include', '*/*/meta/manifest.json'])
 
         if self.s3_sse:
             cmd.append('--sse')
@@ -1556,8 +1556,7 @@ class BackupManager(object):
         for data_file_directory in self.cassandra.data_file_directories:
             incremental_files = self.__find_incremental_files(data_file_directory)
 
-            self.backup_repo.upload_incremental_backups(self.cassandra.host_id, data_file_directory,
-                                                        incremental_files.keys())
+            self.backup_repo.upload_incremental_backups(self.cassandra.host_id, data_file_directory, columnfamily)
 
             logging.info('Clearing incremental files.')
             self.cassandra.clear_incrementals(data_file_directory, incremental_files.items())
@@ -1758,7 +1757,7 @@ if __name__ == '__main__':
         try:
             backup_manager.incremental_backup(args.columnfamily)
         except FileLockedError as file_locked_error:
-            logging.critical('Incremental backup in progress using {0} lock file.'.format(file_locked_error))
+            logging.warning('Incremental backup in progress using {0} lock file.'.format(file_locked_error))
             exit(0)
     elif args.action == 'status':
         backup_manager.status(args.columnfamily, args.restore_time)
