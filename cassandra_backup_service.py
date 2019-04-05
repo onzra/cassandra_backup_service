@@ -1758,8 +1758,10 @@ if __name__ == '__main__':
             backup_manager.incremental_backup(args.columnfamily)
         except FileLockedError as file_locked_error:
             logging.warning('Incremental backup in progress using {0} lock file.'.format(file_locked_error))
-            exit(0)
+            exit(10)
     elif args.action == 'status':
         backup_manager.status(args.columnfamily, args.restore_time)
     elif args.action == 'restore':
         backup_manager.restore(args.columnfamily, args.destination_nodes, args.restore_time, args.restore_dir)
+
+    exit(0)
