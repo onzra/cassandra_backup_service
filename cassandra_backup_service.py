@@ -1605,7 +1605,6 @@ class BackupManager(object):
     def restore(self, columnfamily, nodes, restore_time, restore_dir):
         restore_dir = restore_dir.rstrip('/')
         run_command(['rm', '-rf', restore_dir])
-        run_command(['rm', '-rf', '{0}/download'.format(restore_dir)])
 
         backup_status = BackupStatus(self.manifest_manager, self.backup_repo, restore_time)
 
