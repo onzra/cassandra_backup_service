@@ -360,7 +360,7 @@ class AWSBackupRepo(BaseBackupRepo):
             # TODO: error detection
             run_command(cmd)
 
-    def upload_incremental_backups(self, host_id, data_file_directory, incremental_directories):
+    def upload_incremental_backups(self, host_id, data_file_directory, columnfamily=None):
         """
         Upload incremental backups to S3 for all incremental_directories in provided provided data_file_directory.
 
@@ -374,9 +374,14 @@ class AWSBackupRepo(BaseBackupRepo):
         cmd.append(bucket)
         cmd.extend(['--exclude', '*'])
         #  Upload all column families backups
-        for incremental_directory in incremental_directories:
-            cmd.extend(['--include', '{0}/*'.format(incremental_directory)])
-            cmd.extend(['--exclude', '{0}/manifest.json'.format(incremental_directory)])
+        if columnfamily:
+            ks, cf = columnfamily.split('.')
+            cmd.extend(['--include', '{0}{1}/{2}*/backups/*'.format(data_file_directory, ks, cf)])
+        else:
+            cmd.extend(['--include', '{0}*/*/backups/*'.format(data_file_directory)])
+
+        # for incremental_directory in incremental_directories:
+            # cmd.extend(['--exclude', '{0}/manifest.json'.format(incremental_directory)])
 
         if self.s3_sse:
             cmd.append('--sse')
@@ -417,12 +422,7 @@ class AWSBackupRepo(BaseBackupRepo):
 
         cmd = []
         cmd.extend(['aws', 's3', 'sync', local_path, s3_path])
-        if manifest_files is None:
-            cmd.extend(['--exclude', '*', '--include', '*/*/meta/manifest.json'])
-        else:
-            cmd.extend(['--exclude', '*'])
-            for manifest_file_path in manifest_files:
-                cmd.extend(['--include', manifest_file_path])
+        cmd.extend(['--exclude', '*', '--include', '*/*/meta/manifest.json'])
 
         if self.s3_sse:
             cmd.append('--sse')
@@ -485,7 +485,7 @@ class AWSBackupRepo(BaseBackupRepo):
         filename = '{0}_{1}.json'.format(host_id, timestamp)
 
         remote_path = '{0}/meta/{1}'.format(self.s3_bucket, filename)
-        local_path = '{mp}{fn}'.format(mp=self.meta_path, fn=filename)
+        local_path = '{mp}/{fn}'.format(mp=self.meta_path, fn=filename)
 
         cmd = ['aws', 's3', 'cp', remote_path, local_path]
         run_command(cmd)
@@ -1556,8 +1556,7 @@ class BackupManager(object):
         for data_file_directory in self.cassandra.data_file_directories:
             incremental_files = self.__find_incremental_files(data_file_directory)
 
-            self.backup_repo.upload_incremental_backups(self.cassandra.host_id, data_file_directory,
-                                                        incremental_files.keys())
+            self.backup_repo.upload_incremental_backups(self.cassandra.host_id, data_file_directory, columnfamily)
 
             logging.info('Clearing incremental files.')
             self.cassandra.clear_incrementals(data_file_directory, incremental_files.items())
@@ -1602,9 +1601,9 @@ class BackupManager(object):
 
         return backup_status
 
-    def restore(self, columnfamily, nodes, restore_time):
-        run_command(['rm', '-rf', '/tmp/restore'])
-        run_command(['rm', '-rf', '/tmp/restore-download'])
+    def restore(self, columnfamily, nodes, restore_time, restore_dir):
+        restore_dir = restore_dir.rstrip('/')
+        run_command(['rm', '-rf', restore_dir])
 
         backup_status = BackupStatus(self.manifest_manager, self.backup_repo, restore_time)
 
@@ -1624,10 +1623,10 @@ class BackupManager(object):
                 keyspace_status = host_status.add_keyspace_status(keyspace)
 
                 # Populate columnfamilies in keyspace.
-                for columnfamily in host_lists[host_id]['keyspaces'][keyspace]['tables']:
-                    uuid_string = keyspaces[keyspace]['tables'][columnfamily].replace('-', '')
-                    columnfamily_cfid = '{0}-{1}'.format(columnfamily, uuid_string)
-                    columnfamily_status = keyspace_status.add_columnfamily_status(columnfamily, columnfamily_cfid)
+                for table in host_lists[host_id]['keyspaces'][keyspace]['tables']:
+                    uuid_string = keyspaces[keyspace]['tables'][table].replace('-', '')
+                    columnfamily_cfid = '{0}-{1}'.format(table, uuid_string)
+                    columnfamily_status = keyspace_status.add_columnfamily_status(table, columnfamily_cfid)
 
         status_output_by_host = backup_status.status_output_by_host()
 
@@ -1638,11 +1637,8 @@ class BackupManager(object):
                 if isinstance(item, SnapshotFileStatus) or isinstance(item, IncrementalFileStatus):
                     files_to_download.append(item.remote_path)
 
-            print 'Downloading {0} files for restore to /tmp/restore-download/:'.format(len(files_to_download))
-            for file_to_download in files_to_download:
-                self.backup_repo.download_files([file_to_download], '/tmp/restore-download')
-                sys.stdout.write('.')
-                sys.stdout.flush()
+            print 'Downloading {0} files for restore to {1}/download/:'.format(len(files_to_download), restore_dir)
+            self.backup_repo.download_files(files_to_download, '{0}/download'.format(restore_dir))
 
             print '\nDownload complete.'
 
@@ -1657,9 +1653,9 @@ class BackupManager(object):
                     snapshot = cf_status.latest_snapshot
                     if snapshot is not None:
                         snapshot_id = snapshot.name
-                        downloaded_path = '/tmp/restore-download/{0}/{1}/{2}/snapshots/{3}'.format(
-                            host, ks, cfid, snapshot_id)
-                        restore_path = '/tmp/restore/{0}/{1}/'.format(ks, cf)
+                        downloaded_path = '{0}/download/{1}/{2}/{3}/snapshots/{4}'.format(
+                            restore_dir, host, ks, cfid, snapshot_id)
+                        restore_path = '{0}/{1}/{2}/'.format(restore_dir, ks, cf)
 
                         downloaded_files = os.listdir(downloaded_path)
                         for downloaded_file in downloaded_files:
@@ -1676,17 +1672,18 @@ class BackupManager(object):
                                 continue
 
                             filename = incremental_file_status.filename
-                            downloaded_path = '/tmp/restore-download/{0}/{1}/{2}/backups/{3}'.format(
-                                host, ks, cfid, filename)
-                            restore_path = '/tmp/restore/{0}/{1}/{2}'.format(ks, cf, filename)
+                            downloaded_path = '{0}/download/{1}/{2}/{3}/backups/{4}'.format(
+                                restore_dir, host, ks, cfid, filename)
+                            restore_path = '{0}/{1}/{2}/{3}'.format(restore_dir, ks, cf, filename)
                             if not os.path.exists(os.path.dirname(restore_path)):
                                 os.makedirs(os.path.dirname(restore_path))
+
                             os.rename(downloaded_path, restore_path)
 
             for ks in host_status.keyspace_statuses:
                 ks_status = host_status.keyspace_statuses[ks]
                 for cf in ks_status.columnfamily_statuses:
-                    cmd = ['sstableloader', '-d', nodes, '/tmp/restore/{0}/{1}'.format(ks, cf)]
+                    cmd = ['sstableloader', '-d', nodes, '{0}/{1}/{2}'.format(restore_dir, ks, cf)]
                     return_code, out, err = run_command(cmd)
                     print out
 
@@ -1724,6 +1721,9 @@ if __name__ == '__main__':
                 repo_parser.add_argument('--destination-nodes', help='Connect to a list of (comma separated) hosts for '
                                                                      'initial cluster information', required=True)
                 repo_parser.add_argument('--restore-time', help='UTC timestamp in seconds to restore nodes to.')
+                repo_parser.add_argument('--restore-dir', default='/tmp/restore',
+                                         help='Temporary directory to use for downloading and restoring files. This '
+                                              'directory will be destroyed and recreated during the restore process.')
 
     args = parser.parse_args()
 
@@ -1757,11 +1757,11 @@ if __name__ == '__main__':
         try:
             backup_manager.incremental_backup(args.columnfamily)
         except FileLockedError as file_locked_error:
-            logging.critical('Incremental backup in progress using {0} lock file.'.format(file_locked_error))
+            logging.warning('Incremental backup in progress using {0} lock file.'.format(file_locked_error))
             exit(10)
     elif args.action == 'status':
         backup_manager.status(args.columnfamily, args.restore_time)
     elif args.action == 'restore':
-        backup_manager.restore(args.columnfamily, args.destination_nodes, args.restore_time)
+        backup_manager.restore(args.columnfamily, args.destination_nodes, args.restore_time, args.restore_dir)
 
     exit(0)
