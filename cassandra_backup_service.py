@@ -39,7 +39,7 @@ TIME_FORMAT = '%Y-%m-%d %H:%M:%S'
 
 def glob_optimize_backup_paths(backup_paths):
     """
-    Optimize a list of backup file paths to use a wildcard * character where pattern similarities occur.
+    Optimize a list of backup file paths to use a wildcard * character.
 
     Example of input:
         /tmp/ks/cf/backups/lb-1-big-Index.db
@@ -47,47 +47,22 @@ def glob_optimize_backup_paths(backup_paths):
         /tmp/ks2/cf2/backups/lb-3-big-Index.db
         /tmp/ks2/cf2/backups/lb-3-big-Summary.db
     Output:
-        /tmp/ks/cf/backups/lb-*
-        /tmp/ks2/cf2/backups/lb-3-big-*
+        /tmp/ks/cf/backups/lb-1-*
+        /tmp/ks/cf/backups/lb-2-*
+        /tmp/ks2/cf2/backups/lb-3-*
 
     :param list[str] backup_paths: list of file paths.
 
     :rtype: list[str]
     :return: reduced list of paths with wildcard * character replacements.
     """
-    def prefix_match(strings):
-        """
-        Identify the common prefix string in provided list of strings.
-
-        Example:
-            ['abc123', 'abcdef'] = 'abc'
-            ['hello world', 'hello kitty', 'hello hello'] = 'hello '
-
-        :param list[str] strings: list of strings for which to find a prefix pattern.
-
-        :rtype: str
-        :return: prefix string.
-        """
-        pattern = strings[0]
-
-        while len(pattern) > 0:
-            if all([pattern in s for s in strings]):
-                break
-            pattern = pattern[0:-1]
-
-        return pattern
-
     output = []
-    backup_paths_by_ks_cf = {}
     for backup_path in backup_paths:
-        ks_cf = '/'.join(backup_path.split('/backups/')[0].split('/')[-2:])
-        if ks_cf not in backup_paths_by_ks_cf:
-            backup_paths_by_ks_cf[ks_cf] = []
-        backup_paths_by_ks_cf[ks_cf].append(backup_path)
+        base_path = '{0}/backups/'.format(backup_path.split('/backups/')[0])
+        wildcard_path = '{0}{1}-*'.format(base_path, '-'.join(backup_path.split('/backups/')[1].split('-')[0:2]))
+        output.append(wildcard_path)
 
-    for ks_cf_backup_path in backup_paths_by_ks_cf:
-        backup_path_pattern = '{0}*'.format(prefix_match(backup_paths_by_ks_cf[ks_cf_backup_path]))
-        output.append(backup_path_pattern)
+    output = list(set(output))
 
     return output
 
@@ -1671,8 +1646,7 @@ class BackupManager(object):
             host_status = backup_status.add_host_status(host_id)
 
             keyspaces = host_lists[host_id]['keyspaces']
-            if columnfamily is not None:
-                keyspaces = filter_keyspaces(keyspaces, columnfamily)
+            keyspaces = filter_keyspaces(keyspaces, columnfamily)
 
             for keyspace in keyspaces:
                 keyspace_status = host_status.add_keyspace_status(keyspace)
@@ -1830,6 +1804,10 @@ if __name__ == '__main__':
     elif args.action == 'status':
         backup_manager.status(args.columnfamily, args.restore_time)
     elif args.action == 'restore':
+        if not args.columnfamily:
+            logging.critical('--columnfamily argument is required for restore action.')
+            exit(11)
+
         backup_manager.restore(args.columnfamily, args.destination_nodes, args.restore_time, args.restore_dir)
 
     exit(0)
