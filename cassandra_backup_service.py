@@ -1481,7 +1481,7 @@ class IncrementalStatus(object):
             available_on_remote = remote_incrementals is not None and filename in remote_incrementals
 
             # Only incremental files created after the latest snapshot are needed.
-            if self.cf_owner.latest_snapshot and created_timestamp < self.cf_owner.latest_snapshot.snapshot_timestamp:
+            if self.cf_owner.latest_snapshot and created_timestamp <= self.cf_owner.latest_snapshot.snapshot_timestamp:
                 continue
 
             self.add_incremental_file_status(filename, created_timestamp, available_on_remote)
