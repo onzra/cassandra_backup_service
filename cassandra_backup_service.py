@@ -37,6 +37,36 @@ DRY_RUN = False
 TIME_FORMAT = '%Y-%m-%d %H:%M:%S'
 
 
+def glob_optimize_backup_paths(backup_paths):
+    """
+    Optimize a list of backup file paths to use a wildcard * character.
+
+    Example of input:
+        /tmp/ks/cf/backups/lb-1-big-Index.db
+        /tmp/ks/cf/backups/lb-2-big-Summary.db
+        /tmp/ks2/cf2/backups/lb-3-big-Index.db
+        /tmp/ks2/cf2/backups/lb-3-big-Summary.db
+    Output:
+        /tmp/ks/cf/backups/lb-1-*
+        /tmp/ks/cf/backups/lb-2-*
+        /tmp/ks2/cf2/backups/lb-3-*
+
+    :param list[str] backup_paths: list of file paths.
+
+    :rtype: list[str]
+    :return: reduced list of paths with wildcard * character replacements.
+    """
+    output = []
+    for backup_path in backup_paths:
+        base_path = '{0}/backups/'.format(backup_path.split('/backups/')[0])
+        wildcard_path = '{0}{1}-*'.format(base_path, '-'.join(backup_path.split('/backups/')[1].split('-')[0:2]))
+        output.append(wildcard_path)
+
+    output = list(set(output))
+
+    return output
+
+
 def filter_keyspaces(keyspaces, columnfamily):
     """
     Filter provided keyspaces by dot separated keyspace and columnfamily string: '<KEYSPACE>.<COLUMNFAMILY>'
@@ -1673,8 +1703,7 @@ class BackupManager(object):
             host_status = backup_status.add_host_status(host_id)
 
             keyspaces = host_lists[host_id]['keyspaces']
-            if columnfamily is not None:
-                keyspaces = filter_keyspaces(keyspaces, columnfamily)
+            keyspaces = filter_keyspaces(keyspaces, columnfamily)
 
             for keyspace in keyspaces:
                 keyspace_status = host_status.add_keyspace_status(keyspace)
@@ -1688,13 +1717,26 @@ class BackupManager(object):
         status_output_by_host = backup_status.status_output_by_host()
 
         for host in status_output_by_host:
-            files_to_download = []
+            snapshot_files_to_download = []
+            backup_files_to_download = []
 
             for item in status_output_by_host[host]:
                 if isinstance(item, SnapshotFileStatus) or isinstance(item, IncrementalFileStatus):
-                    files_to_download.append(item.remote_path)
+                    remote_path = item.remote_path
+                    if isinstance(item, SnapshotFileStatus):
+                        snapshot_path = remote_path[0:remote_path.index('/snapshots/')]
+                        snapshot_name = item.snapshot_owner.name
+                        remote_path = '{0}/snapshots/{1}/*'.format(snapshot_path, snapshot_name)
+                        snapshot_files_to_download.append(remote_path)
+                    else:
+                        backup_files_to_download.append(remote_path)
 
-            print 'Downloading {0} files for restore to {1}/download/:'.format(len(files_to_download), restore_dir)
+            snapshot_files_to_download = list(set(snapshot_files_to_download))
+            backup_files_to_download = glob_optimize_backup_paths(backup_files_to_download)
+            files_to_download = snapshot_files_to_download + backup_files_to_download
+
+            print 'Downloading the following paths for restore to {0}/download/:\n{1}'.format(
+                restore_dir, '\n'.join(files_to_download))
             self.backup_repo.download_files(files_to_download, '{0}/download'.format(restore_dir))
 
             print '\nDownload complete.'
@@ -1819,6 +1861,10 @@ if __name__ == '__main__':
     elif args.action == 'status':
         backup_manager.status(args.columnfamily, args.restore_time)
     elif args.action == 'restore':
+        if not args.columnfamily:
+            logging.critical('--columnfamily argument is required for restore action.')
+            exit(11)
+
         backup_manager.restore(args.columnfamily, args.destination_nodes, args.restore_time, args.restore_dir)
 
     exit(0)
