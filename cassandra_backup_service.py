@@ -37,6 +37,61 @@ DRY_RUN = False
 TIME_FORMAT = '%Y-%m-%d %H:%M:%S'
 
 
+def glob_optimize_backup_paths(backup_paths):
+    """
+    Optimize a list of backup file paths to use a wildcard * character where pattern similarities occur.
+
+    Example of input:
+        /tmp/ks/cf/backups/lb-1-big-Index.db
+        /tmp/ks/cf/backups/lb-2-big-Summary.db
+        /tmp/ks2/cf2/backups/lb-3-big-Index.db
+        /tmp/ks2/cf2/backups/lb-3-big-Summary.db
+    Output:
+        /tmp/ks/cf/backups/lb-*
+        /tmp/ks2/cf2/backups/lb-3-big-*
+
+    :param list[str] backup_paths: list of file paths.
+
+    :rtype: list[str]
+    :return: reduced list of paths with wildcard * character replacements.
+    """
+    def prefix_match(strings):
+        """
+        Identify the common prefix string in provided list of strings.
+
+        Example:
+            ['abc123', 'abcdef'] = 'abc'
+            ['hello world', 'hello kitty', 'hello hello'] = 'hello '
+
+        :param list[str] strings: list of strings for which to find a prefix pattern.
+
+        :rtype: str
+        :return: prefix string.
+        """
+        pattern = strings[0]
+
+        while len(pattern) > 0:
+            if all([pattern in s for s in strings]):
+                break
+            pattern = pattern[0:-1]
+
+        return pattern
+
+    output = []
+    backup_paths_by_ks_cf = {}
+    for backup_path in backup_paths:
+        ks_cf = '/'.join(backup_path.split('/backups/')[0].split('/')[-2:])
+        if ks_cf not in backup_paths_by_ks_cf:
+            backup_paths_by_ks_cf[ks_cf] = []
+        backup_paths_by_ks_cf[ks_cf].append(backup_path)
+
+    for ks_cf_backup_path in backup_paths_by_ks_cf:
+        backup_path_pattern = '{0}*'.format(prefix_match(backup_paths_by_ks_cf[ks_cf_backup_path]))
+        output.append(backup_path_pattern)
+
+    return output
+
+
 def filter_keyspaces(keyspaces, columnfamily):
     """
     Filter provided keyspaces by dot separated keyspace and columnfamily string: '<KEYSPACE>.<COLUMNFAMILY>'
@@ -1631,13 +1686,26 @@ class BackupManager(object):
         status_output_by_host = backup_status.status_output_by_host()
 
         for host in status_output_by_host:
-            files_to_download = []
+            snapshot_files_to_download = []
+            backup_files_to_download = []
 
             for item in status_output_by_host[host]:
                 if isinstance(item, SnapshotFileStatus) or isinstance(item, IncrementalFileStatus):
-                    files_to_download.append(item.remote_path)
+                    remote_path = item.remote_path
+                    if isinstance(item, SnapshotFileStatus):
+                        snapshot_path = remote_path[0:remote_path.index('/snapshots/')]
+                        snapshot_name = item.snapshot_owner.name
+                        remote_path = '{0}/snapshots/{1}/*'.format(snapshot_path, snapshot_name)
+                        snapshot_files_to_download.append(remote_path)
+                    else:
+                        backup_files_to_download.append(remote_path)
 
-            print 'Downloading {0} files for restore to {1}/download/:'.format(len(files_to_download), restore_dir)
+            snapshot_files_to_download = list(set(snapshot_files_to_download))
+            backup_files_to_download = glob_optimize_backup_paths(backup_files_to_download)
+            files_to_download = snapshot_files_to_download + backup_files_to_download
+
+            print 'Downloading the following paths for restore to {0}/download/:\n{1}'.format(
+                restore_dir, '\n'.join(files_to_download))
             self.backup_repo.download_files(files_to_download, '{0}/download'.format(restore_dir))
 
             print '\nDownload complete.'
