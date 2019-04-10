@@ -895,9 +895,12 @@ class Cassandra(object):
         """
         for incremental_file in incremental_files:
             if isinstance(incremental_file, str):
+                # Don't delete the /backups/ directory as sstables may have been written during the upload operation.
+                if incremental_file.endswith('/backups'):
+                    continue
                 path = os.path.join(data_file_directory, incremental_file)
-                # TODO: Replace with os.remove(path)
-                run_command(['rm', '-rf', path])
+                logging.info('Removing incremental path: {0}'.format(path))
+                os.remove(path)
             else:
                 self.clear_incrementals(data_file_directory, incremental_file)
 
