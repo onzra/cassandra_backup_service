@@ -171,6 +171,7 @@ def run_command(cmd, execute_during_dry_run=False):
         if not execute_during_dry_run:
             return 0, '', ''
 
+    logging.debug('Run command: {0}'.format(cmd))
     p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     out, err = p.communicate()
 
@@ -182,7 +183,6 @@ def run_command(cmd, execute_during_dry_run=False):
             logger.warn('Command {0} exited with code {1}. STDERR: "{2}"'.format(' '.join(cmd), p.returncode, err))
         else:
             raise Exception('Command {0} exited with code {1}. STDERR: "{2}"'.format(' '.join(cmd), p.returncode, err))
-    logging.debug('Run command: {0}'.format(cmd))
     logging.debug('Return code: {0}'.format(p.returncode))
     if out:
         if '\n' in out.strip():
