@@ -209,17 +209,19 @@ class BaseBackupRepo(object):
         self.meta_path = meta_path
 
     @abc.abstractmethod
-    def download_manifests(self, host_id):
+    def download_manifests(self, host_id, columnfamily):
         """
-        Download all host manifests for provided host id from remote storage.
+        Download all host manifests for provided host id from remote storage. Optionally only download manifests for
+        provided columnfamily.
         """
         pass
 
     @abc.abstractmethod
-    def upload_manifests(self, manifest_files=None):
+    def upload_manifests(self, host_id, manifest_files=None):
         """
         Upload all host manifests for provided host id to remote storage. Optionally provide list of paths to upload.
 
+        :param str host_id: host id.
         :param list[str] manifest_files: if this optional argument is None, upload all manifests for the keyspaces and
         columnfamilies in this host. If the list contains paths, this function will only upload the provided paths.
         """
@@ -418,11 +420,13 @@ class AWSBackupRepo(BaseBackupRepo):
 
         run_command(cmd)
 
-    def download_manifests(self, host_id):
+    def download_manifests(self, host_id, columnfamily=None):
         """
-        Download all manifest files from remotes storage.
+        Download all host manifests for provided host id from remote storage. Optionally only download manifests for
+        provided columnfamily.
 
         :param str host_id: host id.
+        :param str columnfamily: optional columnfamily specification.
         """
         local_path = '{0}/'.format(self.meta_path)
         s3_path = '{0}/{1}'.format(self.s3_bucket, host_id)
@@ -431,7 +435,11 @@ class AWSBackupRepo(BaseBackupRepo):
 
         cmd = []
         cmd.extend(['aws', 's3', 'sync', s3_path, local_path])
-        cmd.extend(['--exclude', '*', '--include', '*/*/meta/manifest.json'])
+        if columnfamily is not None:
+            ks, cf = columnfamily.split('.')
+            cmd.extend(['--exclude', '*', '--include', '{0}/{1}/meta/manifest.json'.format(ks, cf)])
+        else:
+            cmd.extend(['--exclude', '*', '--include', '*/*/meta/manifest.json'])
 
         if self.s3_sse:
             cmd.append('--sse')
@@ -442,6 +450,7 @@ class AWSBackupRepo(BaseBackupRepo):
         """
         Upload all host manifests to remote storage. Optionally provide list of paths to upload.
 
+        :param str host_id: host id.
         :param list[str] manifest_files: if this optional argument is None, upload all manifests for the keyspaces and
         columnfamilies in this host. If the list contains paths, this function will only upload the provided paths.
         """
@@ -1091,13 +1100,13 @@ class ManifestManager(object):
 
         return manifest_file_path
 
-    def download_manifests(self, host_id):
+    def download_manifests(self, host_id, columnfamily=None):
         """
         Download all manifest files from remotes storage.
 
         :param str host_id: host id.
         """
-        self.backup_repo.download_manifests(host_id)
+        self.backup_repo.download_manifests(host_id, columnfamily)
 
     def upload_manifests(self, host_id, manifest_files=None):
         """
@@ -1664,7 +1673,10 @@ class BackupManager(object):
         host_lists = self.manifest_manager.get_host_lists()
 
         for host_id in host_lists:
-            self.manifest_manager.download_manifests(host_id)
+            if columnfamily is not None:
+                self.manifest_manager.download_manifests(host_id, columnfamily=columnfamily)
+            else:
+                self.manifest_manager.download_manifests(host_id)
             host_status = backup_status.add_host_status(host_id)
 
             keyspaces = host_lists[host_id]['keyspaces']
