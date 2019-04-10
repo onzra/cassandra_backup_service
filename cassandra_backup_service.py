@@ -27,6 +27,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import yaml
 
@@ -435,11 +436,14 @@ class AWSBackupRepo(BaseBackupRepo):
         logging.info('Downloading manifest files to: {0}'.format(local_path))
 
         cmd = []
-        cmd.extend(['aws', 's3', 'sync', s3_path, local_path])
         if columnfamily is not None:
             ks, cf = columnfamily.split('.')
-            cmd.extend(['--exclude', '*', '--include', '{0}/{1}/meta/manifest.json'.format(ks, cf)])
+            manifest = '{0}/{1}/meta/manifest.json'.format(ks, cf)
+            s3_path = '{0}/{1}'.format(s3_path, manifest)
+            local_path = '{0}/{1}'.format(local_path, manifest)
+            cmd.extend(['aws', 's3', 'cp', s3_path, local_path])
         else:
+            cmd.extend(['aws', 's3', 'sync', s3_path, local_path])
             cmd.extend(['--exclude', '*', '--include', '*/*/meta/manifest.json'])
 
         if self.s3_sse:
@@ -1158,16 +1162,17 @@ class ManifestManager(object):
 
 class BackupStatus(object):
     """
-
+    BackupStatus.
     """
 
-    def __init__(self, manifest_manager, backup_repo, restore_time=None):
+    def __init__(self, manifest_manager, backup_repo, restore_time=None, columnfamily=None):
         """
         Init.
 
         :param ManifestManager manifest_manager: manifest manager.
         :param BaseBackupRepo backup_repo: remote storage object.
         :param int restore_time: timestamp for latest time which can be used to determine restore status and operations.
+        :param str columnfamily: optional columnfamily specific target.
         """
         self.manifest_manager = manifest_manager
         self.backup_repo = backup_repo
@@ -1179,6 +1184,48 @@ class BackupStatus(object):
             ))
         else:
             self.restore_time = None
+
+        host_lists = self.manifest_manager.get_host_lists()
+
+        for host_id in host_lists:
+            logging.critical('HOST_ID ' + host_id)
+            if columnfamily is not None:
+                self.manifest_manager.download_manifests(host_id, columnfamily=columnfamily)
+            else:
+                self.manifest_manager.download_manifests(host_id)
+            host_status = self.add_host_status(host_id)
+
+            keyspaces = host_lists[host_id]['keyspaces']
+            if columnfamily is not None:
+                keyspaces = filter_keyspaces(keyspaces, columnfamily)
+
+            if columnfamily is not None:
+                keyspaces = filter_keyspaces(keyspaces, columnfamily)
+
+            threads = {}
+            for keyspace in keyspaces:
+                threads[keyspace] = threading.Thread(target=host_status.add_keyspace_status, args=(keyspace,))
+                threads[keyspace].start()
+
+            for i in threads:
+                threads[i].join()
+
+            threads = {}
+            for keyspace in keyspaces:
+                keyspace_status = host_status.keyspace_statuses[keyspace]
+
+                # Populate columnfamilies in keyspace.
+                for table in host_lists[host_id]['keyspaces'][keyspace]['tables']:
+
+                    uuid_string = keyspaces[keyspace]['tables'][table].replace('-', '')
+                    columnfamily_cfid = '{0}-{1}'.format(table, uuid_string)
+
+                    threads[table] = threading.Thread(target=keyspace_status.add_columnfamily_status,
+                                                      args=(table, columnfamily_cfid))
+                    threads[table].start()
+
+            for i in threads:
+                threads[i].join()
 
     def add_host_status(self, host_id):
         host_status = HostStatus(host_id, self)
@@ -1667,33 +1714,9 @@ class BackupManager(object):
         :param str columnfamily: optionally only get status for this keyspace and columnfamily.
         :param bool print_status: optionally choose whether to print status output.
         """
-        backup_status = BackupStatus(self.manifest_manager, self.backup_repo, restore_time)
-
-        # Get hosts.
-        # TODO: Refactor all of this to be in the init of backupstatus.
-        host_lists = self.manifest_manager.get_host_lists()
-
-        for host_id in host_lists:
-            if columnfamily is not None:
-                self.manifest_manager.download_manifests(host_id, columnfamily=columnfamily)
-            else:
-                self.manifest_manager.download_manifests(host_id)
-            host_status = backup_status.add_host_status(host_id)
-
-            keyspaces = host_lists[host_id]['keyspaces']
-            if columnfamily is not None:
-                keyspaces = filter_keyspaces(keyspaces, columnfamily)
-
-            for keyspace in keyspaces:
-                keyspace_status = host_status.add_keyspace_status(keyspace)
-
-                # Populate columnfamilies in keyspace.
-                for table in host_lists[host_id]['keyspaces'][keyspace]['tables']:
-                    uuid_string = keyspaces[keyspace]['tables'][table].replace('-', '')
-                    columnfamily_cfid = '{0}-{1}'.format(table, uuid_string)
-                    columnfamily_status = keyspace_status.add_columnfamily_status(table, columnfamily_cfid)
-
+        backup_status = BackupStatus(self.manifest_manager, self.backup_repo, restore_time, columnfamily)
         print backup_status.status_output()
+
         if backup_status.latest_restore_timestamp():
             print 'Restore time: {0}'.format(to_human_readable_time(backup_status.latest_restore_timestamp()))
         else:
@@ -1705,27 +1728,7 @@ class BackupManager(object):
         restore_dir = restore_dir.rstrip('/')
         run_command(['rm', '-rf', restore_dir])
 
-        backup_status = BackupStatus(self.manifest_manager, self.backup_repo, restore_time)
-
-        # Get hosts.
-        # TODO: Refactor all of this to be in the init of backupstatus.
-        host_lists = self.manifest_manager.get_host_lists()
-
-        for host_id in host_lists:
-            self.manifest_manager.download_manifests(host_id)
-            host_status = backup_status.add_host_status(host_id)
-
-            keyspaces = host_lists[host_id]['keyspaces']
-            keyspaces = filter_keyspaces(keyspaces, columnfamily)
-
-            for keyspace in keyspaces:
-                keyspace_status = host_status.add_keyspace_status(keyspace)
-
-                # Populate columnfamilies in keyspace.
-                for table in host_lists[host_id]['keyspaces'][keyspace]['tables']:
-                    uuid_string = keyspaces[keyspace]['tables'][table].replace('-', '')
-                    columnfamily_cfid = '{0}-{1}'.format(table, uuid_string)
-                    columnfamily_status = keyspace_status.add_columnfamily_status(table, columnfamily_cfid)
+        backup_status = BackupStatus(self.manifest_manager, self.backup_repo, restore_time, columnfamily)
 
         status_output_by_host = backup_status.status_output_by_host()
 
