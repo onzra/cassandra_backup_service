@@ -26,6 +26,7 @@ import os
 import socket
 import subprocess
 import sys
+import tempfile
 import time
 import yaml
 
@@ -1852,9 +1853,9 @@ if __name__ == '__main__':
     if args.action in ('full', 'incremental'):
         cass = Cassandra(args)
         meta_path = cass.meta_path
-    else:
+    elif args.action in ('status', 'restore'):
         cass = None
-        meta_path = '/tmp'
+        meta_path = tempfile.mkdtemp()
 
     if args.repo is AWSBackupRepo:
         repo = AWSBackupRepo(meta_path, args.s3_bucket, args.s3_sse)
@@ -1878,5 +1879,8 @@ if __name__ == '__main__':
             exit(11)
 
         backup_manager.restore(args.columnfamily, args.destination_nodes, args.restore_time, args.restore_dir)
+
+    if args.action in ('status', 'restore'):
+        run_command(['rm', '-rf', meta_path])
 
     exit(0)
