@@ -963,7 +963,16 @@ class ManifestManager(object):
         if os.path.exists(manifest_file_path):
             with open(manifest_file_path, 'r') as manifest_file:
                 logging.info('Using local manifest file {0}'.format(manifest_file_path))
-                manifest = json.load(manifest_file)
+                try:
+                    manifest = json.load(manifest_file)
+                except ValueError as value_error:
+                    logging.warning('Error loading manifest json: {0}'.format(value_error))
+                    logging.warning('Creating new manifest to replace corrupted file - data will be added next backup.')
+                    manifest = {
+                        'keyspace': keyspace,
+                        'column_family': columnfamily,
+                        'created': to_human_readable_time()
+                    }
         else:
             logging.info('Creating new manifest file {0}'.format(manifest_file_path))
             manifest = {
@@ -1191,7 +1200,6 @@ class BackupStatus(object):
         host_lists = self.manifest_manager.get_host_lists()
 
         for host_id in host_lists:
-            logging.critical('HOST_ID ' + host_id)
             if columnfamily is not None:
                 self.manifest_manager.download_manifests(host_id, columnfamily=columnfamily)
             else:
@@ -1820,8 +1828,9 @@ if __name__ == '__main__':
             repo_parser.add_argument('--cassandra-config', dest='cassandra_config',
                                      default='/etc/cassandra/conf/cassandra.yaml',
                                      help='Place to find the cassandra configuration file')
-            repo_parser.add_argument('--columnfamily', help='Only execute backup on specified columnfamily. Must '
-                                                            'include keyspace in the format: <keyspace>.<columnfamily>')
+            columnfamily_arg = repo_parser.add_argument(
+                '--columnfamily', help='Only execute backup on specified columnfamily. Must include keyspace in the '
+                                       'format: <keyspace>.<columnfamily>')
             # cqlsh options
             repo_parser.add_argument('--cqlsh-host', dest='cqlsh_host', required=False, default=socket.getfqdn(),
                                      help='Sets the cqlsh host that will be used to run cqlsh commands')
@@ -1833,9 +1842,11 @@ if __name__ == '__main__':
             repo_parser.add_argument('--log-to-file', help='Redirect all logging to file. Output is not redirected.')
 
             if action == 'status':
+                columnfamily_arg.required = True
                 repo_parser.add_argument('--restore-time', help='UTC timestamp in seconds to get status up to.')
 
             if action == 'restore':
+                columnfamily_arg.required = True
                 repo_parser.add_argument('--destination-nodes', help='Connect to a list of (comma separated) hosts for '
                                                                      'initial cluster information', required=True)
                 repo_parser.add_argument('--restore-time', help='UTC timestamp in seconds to restore nodes to.')
@@ -1880,10 +1891,6 @@ if __name__ == '__main__':
     elif args.action == 'status':
         backup_manager.status(args.columnfamily, args.restore_time)
     elif args.action == 'restore':
-        if not args.columnfamily:
-            logging.critical('--columnfamily argument is required for restore action.')
-            exit(11)
-
         backup_manager.restore(args.columnfamily, args.destination_nodes, args.restore_time, args.restore_dir)
 
     if args.action in ('status', 'restore'):
