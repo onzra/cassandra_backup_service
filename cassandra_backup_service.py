@@ -1112,8 +1112,11 @@ class ManifestManager(object):
         if not os.path.exists(os.path.dirname(manifest_file_path)):
             os.makedirs(os.path.dirname(manifest_file_path))
 
-        with open(manifest_file_path, 'w') as manifest_file:
-            json.dump(manifest, manifest_file)
+        manifest_temp_file_path = tempfile.mkstemp()[1]
+        with open(manifest_temp_file_path, 'w') as manifest_temp_file:
+            json.dump(manifest, manifest_temp_file)
+
+        os.rename(manifest_temp_file_path, manifest_file_path)
 
         return manifest_file_path
 
