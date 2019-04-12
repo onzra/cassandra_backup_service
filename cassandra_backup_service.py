@@ -18,6 +18,7 @@ __email__ = "javila@onzra.com"
 
 import abc
 import argparse
+import ConfigParser
 import fcntl
 import glob
 import json
@@ -1806,10 +1807,24 @@ class BackupManager(object):
 
                             os.rename(downloaded_path, restore_path)
 
+            username = None
+            password = None
+            try:
+                config = ConfigParser.ConfigParser()
+                config.read(os.path.expanduser('~')+'/.cassandra/cqlshrc')
+                username = config.get('authentication', 'username')
+                password = config.get('authentication', 'password')
+            except ConfigParser.NoSectionError:
+                pass
+            except ConfigParser.NoOptionError:
+                pass
+
             for ks in host_status.keyspace_statuses:
                 ks_status = host_status.keyspace_statuses[ks]
                 for cf in ks_status.columnfamily_statuses:
                     cmd = ['sstableloader', '-d', nodes, '{0}/{1}/{2}'.format(restore_dir, ks, cf)]
+                    if username and password:
+                        cmd += ['-u', username, '-pw', password]
                     return_code, out, err = run_command(cmd)
                     print out
 
