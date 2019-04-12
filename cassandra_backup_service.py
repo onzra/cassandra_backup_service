@@ -414,9 +414,6 @@ class AWSBackupRepo(BaseBackupRepo):
         else:
             cmd.extend(['--include', '{0}*/*/backups/*'.format(data_file_directory)])
 
-        # for incremental_directory in incremental_directories:
-            # cmd.extend(['--exclude', '{0}/manifest.json'.format(incremental_directory)])
-
         if self.s3_sse:
             cmd.append('--sse')
 
@@ -598,12 +595,8 @@ class AWSBackupRepo(BaseBackupRepo):
 
 class Cassandra(object):
     """
-    The purpose of this class is to discover information about the host and
-    cluster through nodetool commands, cqlsh describe schema commands, and the
-    cassandra config file.
-    TODO: FIX
-    It also supports telling the node to do a snapshot or an incremental backup, will then interface with a
-    `BackupRepo` and also manage the removal of local files.
+    The purpose of this class is to discover information about the host and cluster through nodetool commands, cqlsh
+    describe schema commands, and the cassandra config file.
     """
     cqlsh_host = None
     config_file = None
@@ -774,7 +767,7 @@ class Cassandra(object):
 
     def __enumerate_keyspace_replication(self, keyspace):
         """
-        Get a dictionary of options for the keyspace from cqlsh
+        Get a dictionary of options for the keyspace from cqlsh.
 
         :rtype: dict
         :return: Dictionary of replication options for the keyspace
