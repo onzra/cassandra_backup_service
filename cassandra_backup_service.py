@@ -1177,7 +1177,7 @@ class BackupStatus(object):
     BackupStatus.
     """
 
-    def __init__(self, manifest_manager, backup_repo, restore_time=None, columnfamily=None):
+    def __init__(self, manifest_manager, backup_repo, restore_time=None, columnfamily=None, host_id=None):
         """
         Init.
 
@@ -1185,6 +1185,7 @@ class BackupStatus(object):
         :param BaseBackupRepo backup_repo: remote storage object.
         :param int restore_time: timestamp for latest time which can be used to determine restore status and operations.
         :param str columnfamily: optional columnfamily specific target.
+        :param str host_id: optional host id specific target.
         """
         self.manifest_manager = manifest_manager
         self.backup_repo = backup_repo
@@ -1198,6 +1199,9 @@ class BackupStatus(object):
             self.restore_time = None
 
         host_lists = self.manifest_manager.get_host_lists()
+
+        if host_id is not None:
+            host_lists = {hl: host_lists[hl] for hl in host_lists if hl == host_id}
 
         for host_id in host_lists:
             if columnfamily is not None:
@@ -1678,7 +1682,7 @@ class BackupManager(object):
 
         if path_filter is not None:
             incremental_files = {
-                i: incremental_files[i] for i in incremental_files if i[0:len(path_filter)] == path_filter
+                i: incremental_files[i] for i in incremental_files if i.startswith(path_filter)
             }
 
         return incremental_files
@@ -1735,11 +1739,11 @@ class BackupManager(object):
 
         return backup_status
 
-    def restore(self, columnfamily, nodes, restore_time, restore_dir):
+    def restore(self, columnfamily, nodes, restore_time, restore_dir, host_id):
         restore_dir = restore_dir.rstrip('/')
         run_command(['rm', '-rf', restore_dir])
 
-        backup_status = BackupStatus(self.manifest_manager, self.backup_repo, restore_time, columnfamily)
+        backup_status = BackupStatus(self.manifest_manager, self.backup_repo, restore_time, columnfamily, host_id)
 
         status_output_by_host = backup_status.status_output_by_host()
 
@@ -1853,6 +1857,7 @@ if __name__ == '__main__':
                 repo_parser.add_argument('--restore-dir', default='/tmp/restore',
                                          help='Temporary directory to use for downloading and restoring files. This '
                                               'directory will be destroyed and recreated during the restore process.')
+                repo_parser.add_argument('--host-id', help='Filter data which will be restored by host id.')
 
     args = parser.parse_args()
 
@@ -1891,7 +1896,8 @@ if __name__ == '__main__':
     elif args.action == 'status':
         backup_manager.status(args.columnfamily, args.restore_time)
     elif args.action == 'restore':
-        backup_manager.restore(args.columnfamily, args.destination_nodes, args.restore_time, args.restore_dir)
+        backup_manager.restore(args.columnfamily, args.destination_nodes, args.restore_time, args.restore_dir,
+                               args.host_id)
 
     if args.action in ('status', 'restore'):
         run_command(['rm', '-rf', meta_path])
