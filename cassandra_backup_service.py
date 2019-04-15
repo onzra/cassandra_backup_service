@@ -1736,7 +1736,8 @@ class BackupManager(object):
 
         return backup_status
 
-    def restore(self, columnfamily, nodes, restore_time=None, restore_dir=None, host_ids=None):
+    def restore(self, columnfamily, nodes, restore_time=None, restore_dir=None, host_ids=None, username=None,
+                password=None):
         """
         Restore backup of columnfamily to provided nodes. This will use sstableloader to stream data after downloading
         from the selected backup repository.
@@ -1750,6 +1751,8 @@ class BackupManager(object):
         :param str restore_time: time to restore to.
         :param str restore_dir: directory to use for restore download and file organization.
         :param list[str] host_ids: list of host_ids to filter for restore.
+        :param str username: optional username to provide sstableloader.
+        :param str password: optional password to provide sstableloader.
         """
         restore_dir = restore_dir.rstrip('/')
         run_command(['rm', '-rf', restore_dir])
@@ -1821,17 +1824,16 @@ class BackupManager(object):
 
                             os.rename(downloaded_path, restore_path)
 
-            username = None
-            password = None
-            try:
-                config = ConfigParser.ConfigParser()
-                config.read(os.path.expanduser('~')+'/.cassandra/cqlshrc')
-                username = config.get('authentication', 'username')
-                password = config.get('authentication', 'password')
-            except ConfigParser.NoSectionError:
-                pass
-            except ConfigParser.NoOptionError:
-                pass
+            if username is None and password is None:
+                try:
+                    config = ConfigParser.ConfigParser()
+                    config.read(os.path.expanduser('~')+'/.cassandra/cqlshrc')
+                    username = config.get('authentication', 'username')
+                    password = config.get('authentication', 'password')
+                except ConfigParser.NoSectionError:
+                    pass
+                except ConfigParser.NoOptionError:
+                    pass
 
             for ks in host_status.keyspace_statuses:
                 ks_status = host_status.keyspace_statuses[ks]
@@ -1883,6 +1885,8 @@ if __name__ == '__main__':
                                          help='Temporary directory to use for downloading and restoring files. This '
                                               'directory will be destroyed and recreated during the restore process.')
                 repo_parser.add_argument('--limit-host-ids', help='Comma separated list of hosts to filter a restore.')
+                repo_parser.add_argument('--username', help='Username with restore privileges for sstableloader.')
+                repo_parser.add_argument('--password', help='Password with restore privileges for sstableloader.')
 
     args = parser.parse_args()
 
@@ -1922,7 +1926,8 @@ if __name__ == '__main__':
         backup_manager.status(args.columnfamily, args.restore_time)
     elif args.action == 'restore':
         host_ids = args.limit_host_ids.split(',') if args.limit_host_ids else None
-        backup_manager.restore(args.columnfamily, args.destination_nodes, args.restore_time, args.restore_dir, host_ids)
+        backup_manager.restore(args.columnfamily, args.destination_nodes, args.restore_time, args.restore_dir, host_ids,
+                               args.username, args.password)
 
     if args.action in ('status', 'restore'):
         run_command(['rm', '-rf', meta_path])
