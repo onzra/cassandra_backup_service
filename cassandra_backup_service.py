@@ -24,6 +24,7 @@ import glob
 import json
 import logging
 import os
+import shutil
 import socket
 import subprocess
 import sys
@@ -1110,7 +1111,7 @@ class ManifestManager(object):
         with open(manifest_temp_file_path, 'w') as manifest_temp_file:
             json.dump(manifest, manifest_temp_file)
 
-        os.rename(manifest_temp_file_path, manifest_file_path)
+        shutil.move(manifest_temp_file_path, manifest_file_path)
 
         return manifest_file_path
 
