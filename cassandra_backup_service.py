@@ -1059,7 +1059,10 @@ class ManifestManager(object):
 
         host_list_file_path = self.save_host_list(data)
         self.backup_repo.upload_host_list(host_list_file_path)
-        os.remove(host_list_file_path)
+        try:
+            os.remove(host_list_file_path)
+        except OSError as os_error:
+            logging.warning('OSError when removing host list file: {0}'.format(os_error))
 
     def get_host_lists(self):
         """
