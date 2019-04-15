@@ -1736,7 +1736,21 @@ class BackupManager(object):
 
         return backup_status
 
-    def restore(self, columnfamily, nodes, restore_time, restore_dir, host_ids):
+    def restore(self, columnfamily, nodes, restore_time=None, restore_dir=None, host_ids=None):
+        """
+        Restore backup of columnfamily to provided nodes. This will use sstableloader to stream data after downloading
+        from the selected backup repository.
+
+        Optionally provide a restore_time to restore up to that point.
+        Optionally provide a restore_dir to use a restore directory other than tmp to download and organize files.
+        Optionally provide host_ids to only restore data from selected hosts.
+
+        :param str columnfamily: dot separated keyspace and columnfamily.
+        :param str nodes: comma separated list of nodes for sstableloader to connect to.
+        :param str restore_time: time to restore to.
+        :param str restore_dir: directory to use for restore download and file organization.
+        :param list[str] host_ids: list of host_ids to filter for restore.
+        """
         restore_dir = restore_dir.rstrip('/')
         run_command(['rm', '-rf', restore_dir])
 

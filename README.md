@@ -4,6 +4,8 @@ This code should be checked out into a location on each Cassandra machine you
 wish to participate in backups. For the purposes of this document we will assume
 this was placed in `/usr/local/cassandra_backup_service/`
 
+The status action can be executed on a machine without Cassandra.
+
 ## Configuration Overview:
 
 When running the cassandra_backup_service.py tool, you will specify an action, and a
@@ -42,6 +44,18 @@ optional arguments:
 
 Note: All of the actions assume cqlsh can be ran on this node by the user with
 
+### AWS Configuration:
+
+The AWS implementation uses AWS CLI tools which is installed via pip:
+
+    pip install awscli
+
+The credentials for awscli are stored here:
+
+    cat ~/.aws/credentials
+    [default]
+    aws_access_key_id = ABCDEFG1AB1234ABC1AB
+    aws_secret_access_key = ABaABCa+/a1aA1aAaABaAab+AaAB2abcA1AaABCa
 
 ### Configuration Full Backups
 
