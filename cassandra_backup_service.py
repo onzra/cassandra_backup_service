@@ -328,7 +328,7 @@ class BaseBackupRepo(object):
         pass
 
     @abc.abstractmethod
-    def download_files(self, remote_files, local_path):
+    def sync_files(self, remote_files, local_path):
         """
         Download provided list of remote_files from remote storage to provided local_path.
 
@@ -576,19 +576,39 @@ class AWSBackupRepo(BaseBackupRepo):
 
         return [f.split(' ')[-1] for f in out.strip().split('\n')]
 
-    def download_files(self, remote_files, local_path):
+    def sync_files(self, remote_files, local_path, base_path=None):
         """
         Download provided list of remote_files from remote storage to provided local_path.
 
         :param list[str] remote_files: list of full paths to remote files.
         :param str local_path: local path where to store downloaded files.
         """
-        cmd = ['aws', 's3', 'sync', self.s3_bucket, local_path]
+        if base_path is None:
+            cmd = ['aws', 's3', 'cp', '--recursive', self.s3_bucket, local_path]
+        else:
+            base_path = '{0}/{1}'.format(self.s3_bucket, base_path)
+            cmd = ['aws', 's3', 'cp', '--recursive', base_path, local_path]
+
         # logging.info('Downloading {0} files from {1} to {2}.'.format(len(remote_files), self.s3_bucket, local_path))
         cmd.extend(['--exclude', '*'])
         #  Upload all column families backups
         for remote_file in remote_files:
             cmd.extend(['--include', remote_file])
+        if self.s3_sse:
+            cmd.append('--sse')
+
+        run_command(cmd)
+
+    def download_files(self, remote_path, local_path):
+        """
+        Recursively download a directory from remote storage to provided local_path.
+
+        :param str remote_path: list of full paths to remote files.
+        :param str local_path: local path where to store downloaded files.
+        """
+        remote_path = '{0}/{1}'.format(self.s3_bucket, remote_path)
+        cmd = ['aws', 's3', 'cp', '--recursive', remote_path, local_path]
+
         if self.s3_sse:
             cmd.append('--sse')
 
@@ -1786,7 +1806,30 @@ class BackupManager(object):
 
             print 'Downloading the following paths for restore to {0}/download/:\n{1}'.format(
                 restore_dir, '\n'.join(files_to_download))
-            self.backup_repo.download_files(files_to_download, '{0}/download'.format(restore_dir))
+
+            threads = []
+            for file_to_download in files_to_download:
+                if '/backups/' in file_to_download:
+                    base_path, file_to_download = file_to_download.split('/backups/')
+                    base_path = '{0}/backups/'.format(base_path)
+                    thread = threading.Thread(target=self.backup_repo.sync_files,
+                                              args=([file_to_download],
+                                                    '{0}/download/{1}'.format(restore_dir, base_path),
+                                                    base_path))
+                elif '/snapshots/' in file_to_download:
+                    snapshot_split = file_to_download.split('/')
+                    path_to_download = '/'.join(snapshot_split[0:-1])
+                    local_path = '{0}/download/{1}'.format(restore_dir, '/'.join(snapshot_split[-6:-1]))
+                    thread = threading.Thread(target=self.backup_repo.download_files,
+                                              args=(path_to_download, local_path))
+                else:
+                    thread = threading.Thread(target=self.backup_repo.sync_files,
+                                              args=([file_to_download], '{0}/download'.format(restore_dir)))
+                thread.start()
+                threads.append(thread)
+
+            for thread in threads:
+                thread.join()
 
             print '\nDownload complete.'
 
