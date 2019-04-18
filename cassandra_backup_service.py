@@ -1778,6 +1778,8 @@ class BackupManager(object):
         :param str username: optional username to provide sstableloader.
         :param str password: optional password to provide sstableloader.
         """
+        restore_start = time.time()
+
         restore_dir = restore_dir.rstrip('/')
         run_command(['rm', '-rf', restore_dir])
 
@@ -1892,6 +1894,8 @@ class BackupManager(object):
                         cmd += ['-u', username, '-pw', password]
                     return_code, out, err = run_command(cmd)
                     logging.info('Output for sstableloader restore to {0}:\n{1}'.format(nodes, out))
+
+            logging.info('Finished restore after {0} seconds.'.format(int(time.time() - restore_start)))
 
 
 if __name__ == '__main__':
