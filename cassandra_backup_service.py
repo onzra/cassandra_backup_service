@@ -1781,6 +1781,7 @@ class BackupManager(object):
         restore_dir = restore_dir.rstrip('/')
         run_command(['rm', '-rf', restore_dir])
 
+        logging.info('Acquiring status for {0}.'.format(columnfamily))
         backup_status = BackupStatus(self.manifest_manager, self.backup_repo, restore_time, columnfamily, host_ids)
 
         status_output_by_host = backup_status.status_output_by_host()
@@ -1804,8 +1805,9 @@ class BackupManager(object):
             backup_files_to_download = glob_optimize_backup_paths(backup_files_to_download)
             files_to_download = snapshot_files_to_download + backup_files_to_download
 
-            print 'Downloading the following paths for restore to {0}/download/:\n{1}'.format(
+            logging.info('Downloading the following paths for restore to {0}/download/:\n{1}'.format(
                 restore_dir, '\n'.join(files_to_download))
+            )
 
             threads = []
             for file_to_download in files_to_download:
@@ -1831,7 +1833,7 @@ class BackupManager(object):
             for thread in threads:
                 thread.join()
 
-            print '\nDownload complete.'
+            logging.info('Download complete.')
 
             # Move files
             host_status = backup_status.host_statuses[host]
@@ -1889,7 +1891,7 @@ class BackupManager(object):
                     if username and password:
                         cmd += ['-u', username, '-pw', password]
                     return_code, out, err = run_command(cmd)
-                    print out
+                    logging.info('Output for sstableloader restore to {0}:\n{1}'.format(nodes, out))
 
 
 if __name__ == '__main__':
