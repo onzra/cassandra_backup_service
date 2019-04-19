@@ -607,7 +607,14 @@ class AWSBackupRepo(BaseBackupRepo):
         :param str local_path: local path where to store downloaded files.
         """
         remote_path = '{0}/{1}'.format(self.s3_bucket, remote_path)
-        cmd = ['aws', 's3', 'cp', '--recursive', remote_path, local_path]
+
+        if '*' in remote_path:
+            cmd = ['aws', 's3', 'cp', '--recursive', '/'.join(remote_path.split('/')[0:-1])+'/', local_path]
+            cmd.extend(['--exclude', '*'])
+            include_path = remote_path.split('/')[-1]
+            cmd.extend(['--include', include_path])
+        else:
+            cmd = ['aws', 's3', 'cp', '--recursive', remote_path, local_path]
 
         if self.s3_sse:
             cmd.append('--sse')
@@ -1807,33 +1814,13 @@ class BackupManager(object):
             backup_files_to_download = glob_optimize_backup_paths(backup_files_to_download)
             files_to_download = snapshot_files_to_download + backup_files_to_download
 
-            logging.info('Downloading the following paths for restore to {0}/download/:\n{1}'.format(
-                restore_dir, '\n'.join(files_to_download))
-            )
+            logging.info('Starting downloads for restore.')
 
-            threads = []
             for file_to_download in files_to_download:
-                if '/backups/' in file_to_download:
-                    base_path, file_to_download = file_to_download.split('/backups/')
-                    base_path = '{0}/backups/'.format(base_path)
-                    thread = threading.Thread(target=self.backup_repo.sync_files,
-                                              args=([file_to_download],
-                                                    '{0}/download/{1}'.format(restore_dir, base_path),
-                                                    base_path))
-                elif '/snapshots/' in file_to_download:
-                    snapshot_split = file_to_download.split('/')
-                    path_to_download = '/'.join(snapshot_split[0:-1])
-                    local_path = '{0}/download/{1}'.format(restore_dir, '/'.join(snapshot_split[-6:-1]))
-                    thread = threading.Thread(target=self.backup_repo.download_files,
-                                              args=(path_to_download, local_path))
-                else:
-                    thread = threading.Thread(target=self.backup_repo.sync_files,
-                                              args=([file_to_download], '{0}/download'.format(restore_dir)))
-                thread.start()
-                threads.append(thread)
-
-            for thread in threads:
-                thread.join()
+                remote_split = file_to_download.split('/')
+                local_path = '{0}/download/{1}/'.format(restore_dir, '/'.join(remote_split[-6:-1]))
+                logging.info('Downloading: {0}'.format(file_to_download))
+                self.backup_repo.download_files(file_to_download, local_path)
 
             logging.info('Download complete.')
 
