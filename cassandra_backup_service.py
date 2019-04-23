@@ -1895,7 +1895,7 @@ class BackupManager(object):
                     return_code, out, err = run_command(cmd)
                     logging.info('Output for sstableloader restore to {0}:\n{1}'.format(nodes, out))
 
-            logging.info('Finished restore after {0} seconds.'.format(int(time.time() - restore_start)))
+        logging.info('Finished restore after {0} seconds.'.format(int(time.time() - restore_start)))
 
 
 if __name__ == '__main__':
