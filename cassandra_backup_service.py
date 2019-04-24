@@ -1788,7 +1788,6 @@ class BackupManager(object):
         restore_start = time.time()
 
         restore_dir = restore_dir.rstrip('/')
-        run_command(['rm', '-rf', restore_dir])
 
         logging.info('Acquiring status for {0}.'.format(columnfamily))
         backup_status = BackupStatus(self.manifest_manager, self.backup_repo, restore_time, columnfamily, host_ids)
@@ -1813,6 +1812,9 @@ class BackupManager(object):
             snapshot_files_to_download = list(set(snapshot_files_to_download))
             backup_files_to_download = glob_optimize_backup_paths(backup_files_to_download)
             files_to_download = snapshot_files_to_download + backup_files_to_download
+
+            logging.info('Clearing restore directory: {0}'.format(restore_dir))
+            run_command(['rm', '-rf', restore_dir])
 
             logging.info('Starting downloads for restore.')
 
