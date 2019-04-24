@@ -39,6 +39,7 @@ logger.setLevel(logging.INFO)
 CASSANDRA_CONFIG_FILE = '/etc/cassandra/conf/cassandra.yaml'
 DRY_RUN = False
 TIME_FORMAT = '%Y-%m-%d %H:%M:%S'
+RESTORE_DIR_FILELOCK = None
 
 
 def glob_optimize_backup_paths(backup_paths):
@@ -135,14 +136,19 @@ class FileLockedError(Exception):
     pass
 
 
-def filelocked(lockfile_path):
+def filelocked(lockfile_path_or_lambda):
     """
     Decorator for a class method to check if provided lockfile_path should stop execution of decorated function.
 
-    :param str lockfile_path: path to lock file.
+    :param str lockfile_path_or_lambda: path to lock file or lambda which returns path.
     """
     def real_decorator(function):
         def wrapper(self, *args, **kwargs):
+            if isinstance(lockfile_path_or_lambda, type(lambda: None)):
+                lockfile_path = lockfile_path_or_lambda()
+            else:
+                lockfile_path = lockfile_path_or_lambda
+
             with open(lockfile_path, 'w') as f:
                 try:
                     fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -1769,6 +1775,7 @@ class BackupManager(object):
 
         return backup_status
 
+    @filelocked(lambda: RESTORE_DIR_FILELOCK)
     def restore(self, columnfamily, nodes, restore_time=None, restore_dir=None, host_ids=None, username=None,
                 password=None):
         """
@@ -1971,9 +1978,17 @@ if __name__ == '__main__':
         elif args.action == 'status':
             backup_manager.status(args.columnfamily, args.restore_time, args.quiet)
         elif args.action == 'restore':
+            if not os.path.exists(args.restore_dir):
+                os.makedirs(args.restore_dir)
+            RESTORE_DIR_FILELOCK = '{0}.filelock'.format(args.restore_dir)
             host_ids = args.limit_host_ids.split(',') if args.limit_host_ids else None
-            backup_manager.restore(args.columnfamily, args.destination_nodes, args.restore_time, args.restore_dir, host_ids,
-                                   args.username, args.password)
+            try:
+                backup_manager.restore(args.columnfamily, args.destination_nodes, args.restore_time, args.restore_dir,
+                                       host_ids, args.username, args.password)
+            except FileLockedError as file_locked_error:
+                logging.warning('Restore in progress using {0} lock file.'.format(file_locked_error))
+                exit(10)
+
     except Exception as exception:
         logging.exception('Exception during action: {0}'.format(action))
         raise
