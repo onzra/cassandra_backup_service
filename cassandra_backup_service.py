@@ -1967,20 +1967,24 @@ if __name__ == '__main__':
     manifest_manager = ManifestManager(cass, meta_path, repo)
     backup_manager = BackupManager(cass, repo, manifest_manager)
 
-    if args.action == 'full':
-        backup_manager.full_backup(args.columnfamily)
-    elif args.action == 'incremental':
-        try:
-            backup_manager.incremental_backup(args.columnfamily)
-        except FileLockedError as file_locked_error:
-            logging.warning('Incremental backup in progress using {0} lock file.'.format(file_locked_error))
-            exit(10)
-    elif args.action == 'status':
-        backup_manager.status(args.columnfamily, args.restore_time)
-    elif args.action == 'restore':
-        host_ids = args.limit_host_ids.split(',') if args.limit_host_ids else None
-        backup_manager.restore(args.columnfamily, args.destination_nodes, args.restore_time, args.restore_dir, host_ids,
-                               args.username, args.password)
+    try:
+        if args.action == 'full':
+            backup_manager.full_backup(args.columnfamily)
+        elif args.action == 'incremental':
+            try:
+                backup_manager.incremental_backup(args.columnfamily)
+            except FileLockedError as file_locked_error:
+                logging.warning('Incremental backup in progress using {0} lock file.'.format(file_locked_error))
+                exit(10)
+        elif args.action == 'status':
+            backup_manager.status(args.columnfamily, args.restore_time)
+        elif args.action == 'restore':
+            host_ids = args.limit_host_ids.split(',') if args.limit_host_ids else None
+            backup_manager.restore(args.columnfamily, args.destination_nodes, args.restore_time, args.restore_dir, host_ids,
+                                   args.username, args.password)
+    except Exception as exception:
+        logging.exception('Exception during action: {0}'.format(action))
+        raise
 
     if args.action in ('status', 'restore'):
         run_command(['rm', '-rf', meta_path])
