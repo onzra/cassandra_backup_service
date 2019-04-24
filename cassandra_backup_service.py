@@ -1750,15 +1750,17 @@ class BackupManager(object):
 
         logging.info('Finished incremental backup after {0} seconds.'.format(int(time.time() - incremental_start)))
 
-    def status(self, columnfamily, restore_time):
+    def status(self, columnfamily, restore_time, quiet):
         """
         Output the latest available backup time and associated files from the backup repository for this host.
 
         :param str columnfamily: optionally only get status for this keyspace and columnfamily.
-        :param bool print_status: optionally choose whether to print status output.
+        :param int restore_time: timestamp for latest time which can be used to determine restore status and operations.
+        :param bool quiet: optionally hide file status output and only print restore time.
         """
         backup_status = BackupStatus(self.manifest_manager, self.backup_repo, restore_time, columnfamily)
-        print backup_status.status_output()
+        if not quiet:
+            print backup_status.status_output()
 
         if backup_status.latest_restore_timestamp():
             print 'Restore time: {0}'.format(to_human_readable_time(backup_status.latest_restore_timestamp()))
@@ -1917,6 +1919,7 @@ if __name__ == '__main__':
             if action == 'status':
                 columnfamily_arg.required = True
                 repo_parser.add_argument('--restore-time', help='UTC timestamp in seconds to get status up to.')
+                repo_parser.add_argument('--quiet', action='store_true', help='Hide file output and only print time.')
 
             if action == 'restore':
                 columnfamily_arg.required = True
@@ -1966,7 +1969,7 @@ if __name__ == '__main__':
                 logging.warning('Incremental backup in progress using {0} lock file.'.format(file_locked_error))
                 exit(10)
         elif args.action == 'status':
-            backup_manager.status(args.columnfamily, args.restore_time)
+            backup_manager.status(args.columnfamily, args.restore_time, args.quiet)
         elif args.action == 'restore':
             host_ids = args.limit_host_ids.split(',') if args.limit_host_ids else None
             backup_manager.restore(args.columnfamily, args.destination_nodes, args.restore_time, args.restore_dir, host_ids,
