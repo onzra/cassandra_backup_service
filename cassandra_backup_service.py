@@ -1765,13 +1765,17 @@ class BackupManager(object):
         :param bool quiet: optionally hide file status output and only print restore time.
         """
         backup_status = BackupStatus(self.manifest_manager, self.backup_repo, restore_time, columnfamily)
+        logging.info(backup_status.status_output())
         if not quiet:
             print backup_status.status_output()
 
         if backup_status.latest_restore_timestamp():
-            print 'Restore time: {0}'.format(to_human_readable_time(backup_status.latest_restore_timestamp()))
+            output = 'Restore time: {0}'.format(to_human_readable_time(backup_status.latest_restore_timestamp()))
         else:
-            print 'Restore time: N/A'
+            output = 'Restore time: N/A'
+
+        logging.info(output)
+        print output
 
         return backup_status
 
