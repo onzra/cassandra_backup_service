@@ -1587,21 +1587,26 @@ class IncrementalStatus(object):
         self.backup_repo = self.cf_owner.ks_owner.host_owner.backup_status.backup_repo
         self.incremental_file_statuses = {}
 
+        s = time.time()
         remote_incrementals = self.backup_repo.list_backup_files(self.cf_owner.ks_owner.host_owner.host_id,
                                                                  self.cf_owner.ks_owner.name,
                                                                  self.cf_owner.columnfamily_cfid)
 
+        logging.info('BackupStatus: Download Time {0}'.format(int(time.time() - s)))
+
+        s = time.time()
         for filename in manifest_data:
             created_timestamp = from_human_readable_time(manifest_data[filename]['created'])
-            logging.info('BackupStatus: Checking if {0} available on remote.'.format(filename))
-            available_on_remote = remote_incrementals is not None and filename in remote_incrementals
-            logging.info('BackupStatus: Remote availability of {0}: {1}'.format(filename, available_on_remote))
-
             # Only incremental files created after the latest snapshot are needed.
             if self.cf_owner.latest_snapshot and created_timestamp <= self.cf_owner.latest_snapshot.snapshot_timestamp:
                 continue
 
+            logging.info('BackupStatus: Checking if {0} available on remote.'.format(filename))
+            available_on_remote = remote_incrementals is not None and filename in remote_incrementals
+            logging.info('BackupStatus: Remote availability of {0}: {1}'.format(filename, available_on_remote))
+
             self.add_incremental_file_status(filename, created_timestamp, available_on_remote)
+        logging.info('BackupStatus: Check Time {0}'.format(int(time.time() - s)))
 
     def add_incremental_file_status(self, filename, created_timestamp, available_on_remote):
         incremental_file_status = IncrementalFileStatus(filename, created_timestamp, available_on_remote, self)
