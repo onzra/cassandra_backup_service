@@ -1594,6 +1594,12 @@ class IncrementalStatus(object):
 
         logging.info('BackupStatus: Download Time {0}'.format(int(time.time() - s)))
 
+        generation = cf_owner.latest_snapshot.manifest_data.keys()[0].split('-')[1]
+        pre = len(remote_incrementals)
+        remote_incrementals = filter(lambda n: n.split('-')[1] >= generation, remote_incrementals)
+        post = len(remote_incrementals)
+        logging.info('BackupStatus: Reduced list size from {0} to {1}: {2} less.'.format(pre, post, pre - post))
+
         s = time.time()
         for filename in manifest_data:
             created_timestamp = from_human_readable_time(manifest_data[filename]['created'])
