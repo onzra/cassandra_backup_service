@@ -1605,7 +1605,7 @@ class IncrementalStatus(object):
                     'big-Statistics.db', 'big-Summary.db', 'big-TOC.txt']
         suffix_remote_incrementals = {}
         for suffix in suffixes:
-            suffix_remote_incrementals[suffix] = [ri for ri in remote_incrementals if ri.endswith(suffix)]
+            suffix_remote_incrementals[suffix] = set([ri for ri in remote_incrementals if ri.endswith(suffix)])
 
         s = time.time()
         for filename in manifest_data:
