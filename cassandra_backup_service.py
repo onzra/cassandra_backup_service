@@ -1600,6 +1600,13 @@ class IncrementalStatus(object):
         post = len(remote_incrementals)
         logging.info('BackupStatus: Reduced list size from {0} to {1}: {2} less.'.format(pre, post, pre - post))
 
+        # Separate list of remote incrementals into individual lists by file.
+        suffixes = ['big-CompressionInfo.db', 'big-Data.db', 'big-Digest.adler32', 'big-Filter.db', 'big-Index.db',
+                    'big-Statistics.db', 'big-Summary.db', 'big-TOC.txt']
+        suffix_remote_incrementals = {}
+        for suffix in suffixes:
+            suffix_remote_incrementals[suffix] = [ri for ri in remote_incrementals if ri.endswith(suffix)]
+
         s = time.time()
         for filename in manifest_data:
             created_timestamp = from_human_readable_time(manifest_data[filename]['created'])
@@ -1608,7 +1615,8 @@ class IncrementalStatus(object):
                 continue
 
             logging.info('BackupStatus: Checking if {0} available on remote.'.format(filename))
-            available_on_remote = remote_incrementals is not None and filename in remote_incrementals
+            suffix = '-'.join(filename.split('-')[-2:])
+            available_on_remote = remote_incrementals is not None and filename in suffix_remote_incrementals[suffix]
             logging.info('BackupStatus: Remote availability of {0}: {1}'.format(filename, available_on_remote))
 
             self.add_incremental_file_status(filename, created_timestamp, available_on_remote)
