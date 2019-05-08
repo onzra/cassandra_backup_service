@@ -704,14 +704,15 @@ class Cassandra(object):
         if 'columnfamily' in args:
             self.keyspace_columnfamily_filter = args.columnfamily
 
-        self.set_meta_path()
+        self.set_meta_path(args.meta_path)
 
-    def set_meta_path(self):
+    def set_meta_path(self, meta_path):
         """
         Set the path where meta files for backup services will be stored. The path selected is based off of the first
         Cassandra data file directory setting.
+
+        :param str meta_path: path for which to store meta data json files.
         """
-        meta_path = '{0}/meta'.format(os.path.dirname(self.data_file_directories[0]))
         logging.debug('Setting meta path: {0}'.format(meta_path))
         if not os.path.exists(meta_path):
             os.makedirs(meta_path)
@@ -1926,6 +1927,8 @@ if __name__ == '__main__':
             repo_parser.add_argument('--debug', action='store_true', default=False, dest='debug',
                                      help='Enable verbose DEBUG level logging.')
             repo_parser.add_argument('--log-to-file', help='Redirect all logging to file. Output is not redirected.')
+            repo_parser.add_argument('--meta-path', help='Path for which to store meta JSON data.',
+                                     default='/tmp/onzra_casandra_backup_service')
 
             if action == 'status':
                 columnfamily_arg.required = True
@@ -1956,6 +1959,9 @@ if __name__ == '__main__':
         logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s', filename=args.log_to_file)
     else:
         logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s')
+
+    if args.meta_path:
+        meta_path = args.meta_path
 
     if args.action in ('full', 'incremental'):
         cass = Cassandra(args)
