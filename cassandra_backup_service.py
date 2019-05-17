@@ -1290,14 +1290,14 @@ class BackupStatus(object):
     BackupStatus.
     """
 
-    def __init__(self, manifest_manager, backup_repo, restore_time=None, columnfamily=None, host_ids=None):
+    def __init__(self, manifest_manager, backup_repo, columnfamily, restore_time=None, host_ids=None):
         """
         Init.
 
         :param ManifestManager manifest_manager: manifest manager.
         :param BaseBackupRepo backup_repo: remote storage object.
+        :param str columnfamily: columnfamily for which to get status.
         :param int restore_time: timestamp for latest time which can be used to determine restore status and operations.
-        :param str columnfamily: optional columnfamily specific target.
         :param list[str] host_ids: optionally filter by list of host ids.
         """
         self.manifest_manager = manifest_manager
@@ -1317,11 +1317,9 @@ class BackupStatus(object):
             host_lists = {hl: host_lists[hl] for hl in host_lists if hl in host_ids}
 
         logging.info('BackupStatus: Iterating through {0} hosts.'.format(len(host_lists)))
-        for host_id in host_lists:
-            if columnfamily is not None:
-                self.manifest_manager.download_manifests(host_id, columnfamily=columnfamily)
-            else:
-                self.manifest_manager.download_manifests(host_id)
+
+        def t_p(host_id):
+            self.manifest_manager.download_manifests(host_id)
             host_status = self.add_host_status(host_id)
 
             keyspaces = host_lists[host_id]['keyspaces']
@@ -1347,7 +1345,6 @@ class BackupStatus(object):
 
                 # Populate columnfamilies in keyspace.
                 for table in host_lists[host_id]['keyspaces'][keyspace]['tables']:
-
                     uuid_string = keyspaces[keyspace]['tables'][table].replace('-', '')
                     columnfamily_cfid = '{0}-{1}'.format(table, uuid_string)
 
@@ -1357,6 +1354,15 @@ class BackupStatus(object):
 
             for i in threads:
                 threads[i].join()
+
+        host_threads = []
+        for host_id in host_lists:
+            host_thread = threading.Thread(target=t_p, args=(host_id,))
+            host_threads.append(host_thread)
+            host_thread.start()
+
+        for host_thread in host_threads:
+            host_thread.join()
 
     def add_host_status(self, host_id):
         host_status = HostStatus(host_id, self)
@@ -1906,7 +1912,7 @@ class BackupManager(object):
         :param int restore_time: timestamp for latest time which can be used to determine restore status and operations.
         :param bool quiet: optionally hide file status output and only print restore time.
         """
-        backup_status = BackupStatus(self.manifest_manager, self.backup_repo, restore_time, columnfamily)
+        backup_status = BackupStatus(self.manifest_manager, self.backup_repo, columnfamily, restore_time)
         logging.info(backup_status.status_output())
         if not quiet:
             print backup_status.status_output()
@@ -1945,7 +1951,7 @@ class BackupManager(object):
         restore_dir = restore_dir.rstrip('/')
 
         logging.info('Acquiring status for {0}.'.format(columnfamily))
-        backup_status = BackupStatus(self.manifest_manager, self.backup_repo, restore_time, columnfamily, host_ids)
+        backup_status = BackupStatus(self.manifest_manager, self.backup_repo, columnfamily, restore_time, host_ids)
 
         status_output_by_host = backup_status.status_output_by_host()
 
