@@ -1238,6 +1238,7 @@ class BackupStatus(object):
         if host_ids is not None:
             host_lists = {hl: host_lists[hl] for hl in host_lists if hl in host_ids}
 
+        logging.info('BackupStatus: Iterating through {0} hosts.'.format(len(host_lists)))
         for host_id in host_lists:
             if columnfamily is not None:
                 self.manifest_manager.download_manifests(host_id, columnfamily=columnfamily)
@@ -1252,6 +1253,7 @@ class BackupStatus(object):
             if columnfamily is not None:
                 keyspaces = filter_keyspaces(keyspaces, columnfamily)
 
+            logging.info('BackupStatus: Creating keyspace status containers for {0} keyspaces.'.format(len(keyspaces)))
             threads = {}
             for keyspace in keyspaces:
                 threads[keyspace] = threading.Thread(target=host_status.add_keyspace_status, args=(keyspace,))
@@ -1259,6 +1261,7 @@ class BackupStatus(object):
 
             for i in threads:
                 threads[i].join()
+            logging.info('BackupStatus: Keyspace containers complete.')
 
             threads = {}
             for keyspace in keyspaces:
@@ -1370,7 +1373,9 @@ class KeyspaceStatus(object):
         self.columnfamily_statuses_by_cfid = {}
 
     def add_columnfamily_status(self, columnfamily_name, columnfamily_cfid):
+        logging.info('BackupStatus: Adding columnfamily status container for: {0}'.format(columnfamily_name))
         columnfamily_status = ColumnfamilyStatus(columnfamily_name, columnfamily_cfid, self)
+        logging.info('BackupStatus: Columnfamily {0} status container complete.'.format(columnfamily_name))
         self.columnfamily_statuses[columnfamily_name] = columnfamily_status
         self.columnfamily_statuses_by_cfid[columnfamily_cfid] = columnfamily_status
         return columnfamily_status
@@ -1424,10 +1429,14 @@ class ColumnfamilyStatus(object):
 
         if 'full' in self.manifest:
             for snapshot in self.manifest['full']:
+                logging.info('BackupStatus: Adding snapshot status for columnfamily {0}.'.format(columnfamily_cfid))
                 snapshot_status = self.add_snapshot_status(snapshot, self.manifest['full'][snapshot])
+                logging.info('BackupStatus: Snapshot status for columnfamily {0} complete.'.format(columnfamily_cfid))
 
         if 'incremental' in self.manifest:
+            logging.info('BackupStatus: Adding incremental status for columnfamily {0}.'.format(columnfamily_cfid))
             incremental_status = self.add_incremental_status(self.manifest['incremental'])
+            logging.info('BackupStatus: Incremenatal status for columnfamily {0} complete.'.format(columnfamily_cfid))
 
     def add_snapshot_status(self, name, manifest_data):
         snapshot_status = SnapshotStatus(name, manifest_data, self)
@@ -1579,19 +1588,40 @@ class IncrementalStatus(object):
         self.backup_repo = self.cf_owner.ks_owner.host_owner.backup_status.backup_repo
         self.incremental_file_statuses = {}
 
+        s = time.time()
         remote_incrementals = self.backup_repo.list_backup_files(self.cf_owner.ks_owner.host_owner.host_id,
                                                                  self.cf_owner.ks_owner.name,
                                                                  self.cf_owner.columnfamily_cfid)
 
+        logging.info('BackupStatus: Download Time {0}'.format(int(time.time() - s)))
+
+        generation = cf_owner.latest_snapshot.manifest_data.keys()[0].split('-')[1]
+        pre = len(remote_incrementals)
+        remote_incrementals = filter(lambda n: n.split('-')[1] >= generation, remote_incrementals)
+        post = len(remote_incrementals)
+        logging.info('BackupStatus: Reduced list size from {0} to {1}: {2} less.'.format(pre, post, pre - post))
+
+        # Separate list of remote incrementals into individual lists by file.
+        suffixes = ['big-CompressionInfo.db', 'big-Data.db', 'big-Digest.adler32', 'big-Filter.db', 'big-Index.db',
+                    'big-Statistics.db', 'big-Summary.db', 'big-TOC.txt']
+        suffix_remote_incrementals = {}
+        for suffix in suffixes:
+            suffix_remote_incrementals[suffix] = set([ri for ri in remote_incrementals if ri.endswith(suffix)])
+
+        s = time.time()
         for filename in manifest_data:
             created_timestamp = from_human_readable_time(manifest_data[filename]['created'])
-            available_on_remote = remote_incrementals is not None and filename in remote_incrementals
-
             # Only incremental files created after the latest snapshot are needed.
             if self.cf_owner.latest_snapshot and created_timestamp <= self.cf_owner.latest_snapshot.snapshot_timestamp:
                 continue
 
+            logging.info('BackupStatus: Checking if {0} available on remote.'.format(filename))
+            suffix = '-'.join(filename.split('-')[-2:])
+            available_on_remote = remote_incrementals is not None and filename in suffix_remote_incrementals[suffix]
+            logging.info('BackupStatus: Remote availability of {0}: {1}'.format(filename, available_on_remote))
+
             self.add_incremental_file_status(filename, created_timestamp, available_on_remote)
+        logging.info('BackupStatus: Check Time {0}'.format(int(time.time() - s)))
 
     def add_incremental_file_status(self, filename, created_timestamp, available_on_remote):
         incremental_file_status = IncrementalFileStatus(filename, created_timestamp, available_on_remote, self)
