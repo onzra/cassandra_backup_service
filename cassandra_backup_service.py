@@ -460,7 +460,7 @@ class AWSBackupRepo(BaseBackupRepo):
         :param str host_id: host id.
         :param str columnfamily: optional columnfamily specification.
         """
-        local_path = '{0}/'.format(self.meta_path)
+        local_path = '{0}/{1}/'.format(self.meta_path, host_id)
         s3_path = '{0}/{1}'.format(self.s3_bucket, host_id)
 
         if not columnfamily:
@@ -492,7 +492,7 @@ class AWSBackupRepo(BaseBackupRepo):
         :param list[str] manifest_files: if this optional argument is None, upload all manifests for the keyspaces and
         columnfamilies in this host. If the list contains paths, this function will only upload the provided paths.
         """
-        local_path = '{0}/'.format(self.meta_path)
+        local_path = '{0}/{1}/'.format(self.meta_path, host_id)
         s3_path = '{0}/{1}'.format(self.s3_bucket, host_id)
 
         if not columnfamily:
@@ -984,6 +984,7 @@ class ManifestManager(object):
     """
 
     cassandra = None
+    host_id = None
     meta_path = None
     backup_repo = None
 
@@ -995,6 +996,10 @@ class ManifestManager(object):
         :param BaseBackupRepo backup_repo: backup repository class.
         """
         self.cassandra = cassandra
+        if cassandra:
+            self.host_id = cassandra.host_id
+        else:
+            self.host_id = 'tmp'
         self.meta_path = meta_path
         self.backup_repo = backup_repo
 
@@ -1021,29 +1026,32 @@ class ManifestManager(object):
         filename = '{0}_{1}.json'.format(self.cassandra.host_id, datetime_string)
         return '{mp}/{fn}'.format(mp=self.cassandra.meta_path, fn=filename)
 
-    def get_manifest_file_path(self, keyspace, columnfamily):
+    def get_manifest_file_path(self, host_id, keyspace, columnfamily):
         """
         Generate path to manifest file for provided keyspace and columnfamily.
 
+        :param str host_id: host id.
         :param str keyspace: keyspace.
         :param str columnfamily: columnfamily.
 
         :rtype: str
         :return: path to keyspace columnfamily manifest JSON file.
         """
-        return '{mp}/{ks}/{cf}/meta/manifest.json'.format(mp=self.meta_path, ks=keyspace, cf=columnfamily)
+        return '{mp}/{h}/{ks}/{cf}/meta/manifest.json'.format(mp=self.meta_path, h=host_id, ks=keyspace,
+                                                              cf=columnfamily)
 
-    def load_manifest(self, keyspace, columnfamily):
+    def load_manifest(self, host_id, keyspace, columnfamily):
         """
         Load manifest file JSON for provided keyspace and columnfamily.
 
+        :param str host_id: host id.
         :param str keyspace: keyspace.
         :param str columnfamily: columnfamily.
 
         :rtype: dict
         :return: manifest JSON dict.
         """
-        manifest_file_path = self.get_manifest_file_path(keyspace, columnfamily)
+        manifest_file_path = self.get_manifest_file_path(host_id, keyspace, columnfamily)
 
         if os.path.exists(manifest_file_path):
             with open(manifest_file_path, 'r') as manifest_file:
@@ -1089,7 +1097,7 @@ class ManifestManager(object):
 
         for ks in keyspaces:
             for cf in keyspaces[ks]['tables']:
-                manifest = self.load_manifest(ks, cf)
+                manifest = self.load_manifest(self.host_id, ks, cf)
 
                 if 'full' not in manifest:
                     manifest['full'] = {}
@@ -1218,7 +1226,7 @@ class ManifestManager(object):
         """
         manifest['updated'] = to_human_readable_time()
 
-        manifest_file_path = self.get_manifest_file_path(keyspace, columnfamily)
+        manifest_file_path = self.get_manifest_file_path(self.host_id, keyspace, columnfamily)
 
         if not os.path.exists(os.path.dirname(manifest_file_path)):
             os.makedirs(os.path.dirname(manifest_file_path))
@@ -1265,7 +1273,7 @@ class ManifestManager(object):
             keyspace = dir_split[0]
             columnfamily = '-'.join(dir_split[1].split('-')[0:-1])
 
-            manifest = self.load_manifest(keyspace, columnfamily)
+            manifest = self.load_manifest(self.host_id, keyspace, columnfamily)
             if 'incremental' not in manifest:
                 manifest['incremental'] = {}
 
@@ -1318,8 +1326,8 @@ class BackupStatus(object):
 
         logging.info('BackupStatus: Iterating through {0} hosts.'.format(len(host_lists)))
 
-        def t_p(host_id):
-            self.manifest_manager.download_manifests(host_id)
+        def host_init(host_id):
+            self.manifest_manager.download_manifests(host_id, columnfamily)
             host_status = self.add_host_status(host_id)
 
             keyspaces = host_lists[host_id]['keyspaces']
@@ -1357,7 +1365,7 @@ class BackupStatus(object):
 
         host_threads = []
         for host_id in host_lists:
-            host_thread = threading.Thread(target=t_p, args=(host_id,))
+            host_thread = threading.Thread(target=host_init, args=(host_id,))
             host_threads.append(host_thread)
             host_thread.start()
 
@@ -1507,7 +1515,7 @@ class ColumnfamilyStatus(object):
         self.backup_status = self.ks_owner.host_owner.backup_status
         self.manifest_manager = self.backup_status.manifest_manager
 
-        self.manifest = self.manifest_manager.load_manifest(self.ks_owner.name, self.name)
+        self.manifest = self.manifest_manager.load_manifest(self.host_owner.host_id, self.ks_owner.name, self.name)
 
         self.latest_snapshot = None
 
@@ -1940,7 +1948,7 @@ class BackupManager(object):
 
         :param str columnfamily: dot separated keyspace and columnfamily.
         :param str nodes: comma separated list of nodes for sstableloader to connect to.
-        :param str restore_time: time to restore to.
+        :param int restore_time: time to restore to.
         :param str restore_dir: directory to use for restore download and file organization.
         :param list[str] host_ids: list of host_ids to filter for restore.
         :param str username: optional username to provide sstableloader.
