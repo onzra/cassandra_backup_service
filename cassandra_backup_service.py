@@ -2103,7 +2103,7 @@ if __name__ == '__main__':
                 columnfamily_arg.required = True
                 repo_parser.add_argument('--restore-time', help='UTC timestamp in seconds to get status up to.')
                 repo_parser.add_argument('--quiet', action='store_true', help='Hide file output and only print time.')
-                repo_parser.add_argument('--thread_limit', type=int, help='Maximum number of concurrent threads.',
+                repo_parser.add_argument('--thread-limit', type=int, help='Maximum number of concurrent threads.',
                                          default=4)
 
             if action == 'restore':
