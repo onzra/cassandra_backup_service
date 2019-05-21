@@ -1298,7 +1298,7 @@ class BackupStatus(object):
     BackupStatus.
     """
 
-    def __init__(self, manifest_manager, backup_repo, columnfamily, restore_time=None, host_ids=None):
+    def __init__(self, manifest_manager, backup_repo, columnfamily, restore_time=None, host_ids=None, thread_limit=1):
         """
         Init.
 
@@ -1307,6 +1307,7 @@ class BackupStatus(object):
         :param str columnfamily: columnfamily for which to get status.
         :param int restore_time: timestamp for latest time which can be used to determine restore status and operations.
         :param list[str] host_ids: optionally filter by list of host ids.
+        :param int thread_limit: max number of concurrent threads for host status.
         """
         self.manifest_manager = manifest_manager
         self.backup_repo = backup_repo
@@ -1363,14 +1364,20 @@ class BackupStatus(object):
             for i in threads:
                 threads[i].join()
 
-        host_threads = []
-        for host_id in host_lists:
-            host_thread = threading.Thread(target=host_init, args=(host_id,))
-            host_threads.append(host_thread)
-            host_thread.start()
+        host_lists_items = host_lists.items()
 
-        for host_thread in host_threads:
-            host_thread.join()
+        for ti in range(0, len(host_lists_items), thread_limit):
+            host_list_subset = host_lists_items[ti:ti+thread_limit]
+
+            host_threads = []
+            for host_list_subset_item in host_list_subset:
+                host_id = host_list_subset_item[0]
+                host_thread = threading.Thread(target=host_init, args=(host_id,))
+                host_threads.append(host_thread)
+                host_thread.start()
+
+            for host_thread in host_threads:
+                host_thread.join()
 
     def add_host_status(self, host_id):
         host_status = HostStatus(host_id, self)
@@ -1912,15 +1919,17 @@ class BackupManager(object):
 
         logging.info('Finished incremental backup after {0} seconds.'.format(int(time.time() - incremental_start)))
 
-    def status(self, columnfamily, restore_time, quiet):
+    def status(self, columnfamily, restore_time, quiet, thread_limit):
         """
         Output the latest available backup time and associated files from the backup repository for this host.
 
         :param str columnfamily: optionally only get status for this keyspace and columnfamily.
         :param int restore_time: timestamp for latest time which can be used to determine restore status and operations.
         :param bool quiet: optionally hide file status output and only print restore time.
+        :param int thread_limit: max number of concurrent threads for host status.
         """
-        backup_status = BackupStatus(self.manifest_manager, self.backup_repo, columnfamily, restore_time)
+        backup_status = BackupStatus(self.manifest_manager, self.backup_repo, columnfamily, restore_time,
+                                     thread_limit=thread_limit)
         logging.info(backup_status.status_output())
         if not quiet:
             print backup_status.status_output()
@@ -2094,6 +2103,8 @@ if __name__ == '__main__':
                 columnfamily_arg.required = True
                 repo_parser.add_argument('--restore-time', help='UTC timestamp in seconds to get status up to.')
                 repo_parser.add_argument('--quiet', action='store_true', help='Hide file output and only print time.')
+                repo_parser.add_argument('--thread_limit', type=int, help='Maximum number of concurrent threads.',
+                                         default=4)
 
             if action == 'restore':
                 columnfamily_arg.required = True
@@ -2146,7 +2157,7 @@ if __name__ == '__main__':
                 logging.warning('Incremental backup in progress using {0} lock file.'.format(file_locked_error))
                 exit(10)
         elif args.action == 'status':
-            backup_manager.status(args.columnfamily, args.restore_time, args.quiet)
+            backup_manager.status(args.columnfamily, args.restore_time, args.quiet, args.thread_limit)
         elif args.action == 'restore':
             if not os.path.exists(args.restore_dir):
                 os.makedirs(args.restore_dir)
