@@ -448,7 +448,7 @@ class AWSBackupRepo(BaseBackupRepo):
             local_path = '{0}/{1}'.format(local_path, manifest)
             cmd.extend(['aws', 's3', 'cp', s3_path, local_path])
         else:
-            cmd.extend(['aws', 's3', 'sync', s3_path, local_path])
+            cmd.extend(['aws', 's3', 'cp', '--recursive', s3_path, local_path])
             cmd.extend(['--exclude', '*', '--include', '*/*/meta/manifest.json'])
 
         if self.s3_sse:
