@@ -470,7 +470,7 @@ class AWSBackupRepo(BaseBackupRepo):
         logging.info('Uploading manifest files to Amazon S3: {0}'.format(s3_path))
 
         cmd = []
-        cmd.extend(['aws', 's3', 'sync', local_path, s3_path])
+        cmd.extend(['aws', 's3', 'cp', '--recursive', local_path, s3_path])
         cmd.extend(['--exclude', '*', '--include', '*/*/meta/manifest.json'])
 
         if self.s3_sse:
