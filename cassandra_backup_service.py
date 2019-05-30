@@ -1614,7 +1614,7 @@ class IncrementalStatus(object):
             generation = cf_owner.latest_snapshot.manifest_data.keys()[0].split('-')[1]
         except AttributeError:
             generation = 0
-        
+
         pre = len(remote_incrementals)
         remote_incrementals = filter(lambda n: n.split('-')[1] >= generation, remote_incrementals)
         post = len(remote_incrementals)
@@ -1772,7 +1772,7 @@ class BackupManager(object):
         return incremental_files
 
     @filelocked('/tmp/.incremental_cassandra_backup')
-    def incremental_backup(self, columnfamily=None):
+    def incremental_backup(self, columnfamily=None, thread_limit=4):
         """
         Sync incremental backups that are stored on this cassandra node and upload them to remote storage. This will
         remove incremental files after uploading.
@@ -1809,11 +1809,25 @@ class BackupManager(object):
                     logging.info('Incremental manifest upload for {0} error: {1}'.format(ks_cf, exception))
 
         for data_file_directory in self.cassandra.data_file_directories:
-            incremental_files = self.__find_incremental_files(data_file_directory)
+            incremental_files = self.__find_incremental_files(data_file_directory).keys()
 
-            self.backup_repo.upload_incremental_backups(self.cassandra.host_id, data_file_directory, columnfamily)
+            for ti in range(0, len(incremental_files), thread_limit):
+                incremental_files_subset = incremental_files[ti:ti + thread_limit]
 
+                host_threads = []
+                for incremental_files_subset_item in incremental_files_subset:
+                    ks_cf = '.'.join(incremental_files_subset_item.split('/')[0:2])
+                    host_thread = threading.Thread(target=self.backup_repo.upload_incremental_backups, args=(
+                        self.cassandra.host_id, data_file_directory, ks_cf))
+                    host_threads.append(host_thread)
+                    host_thread.start()
+
+                for host_thread in host_threads:
+                    host_thread.join()
+
+        for data_file_directory in self.cassandra.data_file_directories:
             logging.info('Clearing incremental files.')
+            incremental_files = self.__find_incremental_files(data_file_directory)
             self.cassandra.clear_incrementals(data_file_directory, incremental_files.items())
 
         logging.info('Finished incremental backup after {0} seconds.'.format(int(time.time() - incremental_start)))
@@ -1990,6 +2004,8 @@ if __name__ == '__main__':
             repo_parser.add_argument('--log-to-file', help='Redirect all logging to file. Output is not redirected.')
             repo_parser.add_argument('--meta-path', help='Path for which to store meta JSON data.',
                                      default='/tmp/onzra_casandra_backup_service')
+            repo_parser.add_argument('--thread-limit', type=int, help='Maximum number of concurrent threads.',
+                                     default=4)
 
             if action == 'status':
                 columnfamily_arg.required = True
@@ -2042,7 +2058,7 @@ if __name__ == '__main__':
             backup_manager.full_backup(args.columnfamily)
         elif args.action == 'incremental':
             try:
-                backup_manager.incremental_backup(args.columnfamily)
+                backup_manager.incremental_backup(args.columnfamily, args.thread_limit)
             except FileLockedError as file_locked_error:
                 logging.warning('Incremental backup in progress using {0} lock file.'.format(file_locked_error))
                 exit(10)
