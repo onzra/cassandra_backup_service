@@ -1768,7 +1768,13 @@ class BackupManager(object):
             logging.critical('You must enable backups to use this feature.')
             raise RuntimeError('Backups are not enabled.')
 
-        self.manifest_manager.download_manifests(self.cassandra.host_id)
+        for ks in self.cassandra.keyspace_schema_data:
+            for cf in self.cassandra.keyspace_schema_data[ks]['tables']:
+                ks_cf = '{ks}.{cf}'.format(ks=ks, cf=cf)
+                try:
+                    self.manifest_manager.download_manifests(self.cassandra.host_id, ks_cf)
+                except Exception as exception:
+                    logging.info('Incremental manifest download for {0} error: {1}'.format(ks_cf, exception))
 
         for data_file_directory in self.cassandra.data_file_directories:
             incremental_files = self.__find_incremental_files(data_file_directory, columnfamily)
