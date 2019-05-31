@@ -249,7 +249,7 @@ class BaseBackupRepo(object):
         pass
 
     @abc.abstractmethod
-    def upload_incremental_backups(self, host_id, data_file_directory, incremental_directories):
+    def upload_incremental_backups(self, host_id, data_file_directory, filepath, incremental_directories):
         """
         Upload incremental backups to S3 for all incremental_directories in provided provided data_file_directory.
 
@@ -402,7 +402,7 @@ class AWSBackupRepo(BaseBackupRepo):
             # TODO: error detection
             run_command(cmd)
 
-    def upload_incremental_backups(self, host_id, data_file_directory, columnfamily=None):
+    def upload_incremental_backups(self, host_id, data_file_directory, filepath=None, columnfamily=None):
         """
         Upload incremental backups to S3 for all incremental_directories in provided provided data_file_directory.
 
@@ -412,15 +412,23 @@ class AWSBackupRepo(BaseBackupRepo):
         """
         cmd = ['aws', 's3', 'sync', data_file_directory]
         bucket = '{0}/{1}'.format(self.s3_bucket, host_id)
-        logging.info('Uploading incremental backup to bucket: {0}'.format(bucket))
+        if filepath:
+            logging.info('Uploading incremental backup {0} to bucket: {1}'.format(filepath, bucket))
+        else:
+            logging.info('Uploading incremental backup to bucket: {0}'.format(bucket))
         cmd.append(bucket)
         cmd.extend(['--exclude', '*'])
         #  Upload all column families backups
-        if columnfamily:
-            ks, cf = columnfamily.split('.')
-            cmd.extend(['--include', '{0}{1}/{2}*/backups/*'.format(data_file_directory, ks, cf)])
+        if filepath:
+            local_path = '{0}{1}'.format(data_file_directory, filepath)
+            remote_path = '{0}/{1}'.format(bucket, filepath)
+            cmd = ['aws', 's3', 'cp', local_path, remote_path]
         else:
-            cmd.extend(['--include', '{0}*/*/backups/*'.format(data_file_directory)])
+            if columnfamily:
+                ks, cf = columnfamily.split('.')
+                cmd.extend(['--include', '{0}{1}/{2}*/backups/*'.format(data_file_directory, ks, cf)])
+            else:
+                cmd.extend(['--include', '{0}*/*/backups/*'.format(data_file_directory)])
 
         if self.s3_sse:
             cmd.append('--sse')
@@ -1809,16 +1817,19 @@ class BackupManager(object):
                     logging.info('Incremental manifest upload for {0} error: {1}'.format(ks_cf, exception))
 
         for data_file_directory in self.cassandra.data_file_directories:
-            incremental_files = self.__find_incremental_files(data_file_directory).keys()
+            incremental_files = self.__find_incremental_files(data_file_directory)
+            files_to_upload = []
+            for path in incremental_files:
+                for filepath in incremental_files[path]:
+                    files_to_upload.append(filepath)
 
-            for ti in range(0, len(incremental_files), thread_limit):
-                incremental_files_subset = incremental_files[ti:ti + thread_limit]
+            for ti in range(0, len(files_to_upload), thread_limit):
+                files_to_upload_subset = files_to_upload[ti:ti + thread_limit]
 
                 host_threads = []
-                for incremental_files_subset_item in incremental_files_subset:
-                    ks_cf = '.'.join(incremental_files_subset_item.split('/')[0:2])
+                for files_to_upload_subset_item in files_to_upload_subset:
                     host_thread = threading.Thread(target=self.backup_repo.upload_incremental_backups, args=(
-                        self.cassandra.host_id, data_file_directory, ks_cf))
+                        self.cassandra.host_id, data_file_directory, files_to_upload_subset_item))
                     host_threads.append(host_thread)
                     host_thread.start()
 
