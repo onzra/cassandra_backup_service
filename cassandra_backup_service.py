@@ -1220,11 +1220,11 @@ class ManifestManager(object):
                 full_path = '{}{}'.format(data_file_directory, path)
                 filename = path.replace(dir, '').strip('/')
 
-                _, md5sum_result, _ = run_command(['md5sum', full_path])
+                #_, md5sum_result, _ = run_command(['md5sum', full_path])
 
                 manifest['incremental'][filename] = {
                     'created': to_human_readable_time(os.path.getmtime(full_path)),
-                    'md5sum': md5sum_result.split(' ')[0].strip(),
+                    'md5sum': '', #md5sum_result.split(' ')[0].strip(),
                 }
 
             manifest_file_updated = self.save_manifest(keyspace, columnfamily, manifest)
