@@ -422,7 +422,10 @@ class AWSBackupRepo(BaseBackupRepo):
         if filepath:
             local_path = '{0}{1}'.format(data_file_directory, filepath)
             remote_path = '{0}/{1}'.format(bucket, filepath)
-            cmd = ['aws', 's3', 'cp', local_path, remote_path]
+            if local_path.endswith('/'):
+                cmd = ['aws', 's3', 'cp', '--recursive', local_path, remote_path]
+            else:
+                cmd = ['aws', 's3', 'cp', local_path, remote_path]
         else:
             if columnfamily:
                 ks, cf = columnfamily.split('.')
@@ -1799,6 +1802,7 @@ class BackupManager(object):
             for cf in self.cassandra.keyspace_schema_data[ks]['tables']:
                 ks_cf = '{ks}.{cf}'.format(ks=ks, cf=cf)
                 try:
+                    # pass
                     self.manifest_manager.download_manifests(self.cassandra.host_id, ks_cf)
                 except Exception as exception:
                     logging.info('Incremental manifest download for {0} error: {1}'.format(ks_cf, exception))
@@ -1812,6 +1816,7 @@ class BackupManager(object):
             for cf in self.cassandra.keyspace_schema_data[ks]['tables']:
                 ks_cf = '{ks}.{cf}'.format(ks=ks, cf=cf)
                 try:
+                    # pass
                     self.manifest_manager.upload_manifests(self.cassandra.host_id, ks_cf)
                 except Exception as exception:
                     logging.info('Incremental manifest upload for {0} error: {1}'.format(ks_cf, exception))
@@ -1820,8 +1825,7 @@ class BackupManager(object):
             incremental_files = self.__find_incremental_files(data_file_directory)
             files_to_upload = []
             for path in incremental_files:
-                for filepath in incremental_files[path]:
-                    files_to_upload.append(filepath)
+                files_to_upload.append(path + '/')
 
             for ti in range(0, len(files_to_upload), thread_limit):
                 files_to_upload_subset = files_to_upload[ti:ti + thread_limit]
