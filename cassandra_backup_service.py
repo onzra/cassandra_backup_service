@@ -1822,7 +1822,6 @@ class BackupManager(object):
                     logging.info('Incremental manifest upload for {0} error: {1}'.format(ks_cf, exception))
 
         for data_file_directory in self.cassandra.data_file_directories:
-            incremental_files = self.__find_incremental_files(data_file_directory)
             files_to_upload = []
             for path in incremental_files:
                 files_to_upload.append(path + '/')
@@ -1840,10 +1839,8 @@ class BackupManager(object):
                 for host_thread in host_threads:
                     host_thread.join()
 
-        for data_file_directory in self.cassandra.data_file_directories:
-            logging.info('Clearing incremental files.')
-            incremental_files = self.__find_incremental_files(data_file_directory)
-            self.cassandra.clear_incrementals(data_file_directory, incremental_files.items())
+        logging.info('Clearing incremental files.')
+        self.cassandra.clear_incrementals(data_file_directory, incremental_files.items())
 
         logging.info('Finished incremental backup after {0} seconds.'.format(int(time.time() - incremental_start)))
 
