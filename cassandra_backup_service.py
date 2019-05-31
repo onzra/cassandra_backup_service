@@ -227,7 +227,7 @@ class BaseBackupRepo(object):
         pass
 
     @abc.abstractmethod
-    def upload_manifests(self, host_id, manifest_files=None):
+    def upload_manifests(self, host_id, ks_cf=None, manifest_files=None):
         """
         Upload all host manifests for provided host id to remote storage. Optionally provide list of paths to upload.
 
@@ -249,7 +249,7 @@ class BaseBackupRepo(object):
         pass
 
     @abc.abstractmethod
-    def upload_incremental_backups(self, host_id, data_file_directory, incremental_directories):
+    def upload_incremental_backups(self, host_id, data_file_directory, filepath, incremental_directories):
         """
         Upload incremental backups to S3 for all incremental_directories in provided provided data_file_directory.
 
@@ -402,7 +402,7 @@ class AWSBackupRepo(BaseBackupRepo):
             # TODO: error detection
             run_command(cmd)
 
-    def upload_incremental_backups(self, host_id, data_file_directory, columnfamily=None):
+    def upload_incremental_backups(self, host_id, data_file_directory, filepath=None, columnfamily=None):
         """
         Upload incremental backups to S3 for all incremental_directories in provided provided data_file_directory.
 
@@ -412,15 +412,26 @@ class AWSBackupRepo(BaseBackupRepo):
         """
         cmd = ['aws', 's3', 'sync', data_file_directory]
         bucket = '{0}/{1}'.format(self.s3_bucket, host_id)
-        logging.info('Uploading incremental backup to bucket: {0}'.format(bucket))
+        if filepath:
+            logging.info('Uploading incremental backup {0} to bucket: {1}'.format(filepath, bucket))
+        else:
+            logging.info('Uploading incremental backup to bucket: {0}'.format(bucket))
         cmd.append(bucket)
         cmd.extend(['--exclude', '*'])
         #  Upload all column families backups
-        if columnfamily:
-            ks, cf = columnfamily.split('.')
-            cmd.extend(['--include', '{0}{1}/{2}*/backups/*'.format(data_file_directory, ks, cf)])
+        if filepath:
+            local_path = '{0}{1}'.format(data_file_directory, filepath)
+            remote_path = '{0}/{1}'.format(bucket, filepath)
+            if local_path.endswith('/'):
+                cmd = ['aws', 's3', 'cp', '--recursive', local_path, remote_path]
+            else:
+                cmd = ['aws', 's3', 'cp', local_path, remote_path]
         else:
-            cmd.extend(['--include', '{0}*/*/backups/*'.format(data_file_directory)])
+            if columnfamily:
+                ks, cf = columnfamily.split('.')
+                cmd.extend(['--include', '{0}{1}/{2}*/backups/*'.format(data_file_directory, ks, cf)])
+            else:
+                cmd.extend(['--include', '{0}*/*/backups/*'.format(data_file_directory)])
 
         if self.s3_sse:
             cmd.append('--sse')
@@ -438,7 +449,10 @@ class AWSBackupRepo(BaseBackupRepo):
         local_path = '{0}/'.format(self.meta_path)
         s3_path = '{0}/{1}'.format(self.s3_bucket, host_id)
 
-        logging.info('Downloading manifest files to: {0}'.format(local_path))
+        if not columnfamily:
+            logging.info('Downloading manifest files to: {0}'.format(local_path))
+        else:
+            logging.info('Downloading manifest files for {cf} to: {lp}'.format(cf=columnfamily, lp=local_path))
 
         cmd = []
         if columnfamily is not None:
@@ -456,7 +470,7 @@ class AWSBackupRepo(BaseBackupRepo):
 
         run_command(cmd)
 
-    def upload_manifests(self, host_id, manifest_files=None):
+    def upload_manifests(self, host_id, columnfamily=None, manifest_files=None):
         """
         Upload all host manifests to remote storage. Optionally provide list of paths to upload.
 
@@ -467,11 +481,23 @@ class AWSBackupRepo(BaseBackupRepo):
         local_path = '{0}/'.format(self.meta_path)
         s3_path = '{0}/{1}'.format(self.s3_bucket, host_id)
 
-        logging.info('Uploading manifest files to Amazon S3: {0}'.format(s3_path))
+        if not columnfamily:
+            logging.info('Uploading manifest files to: {0}'.format(local_path))
+        else:
+            logging.info('Uploading manifest files for {cf} to: {lp}'.format(cf=columnfamily, lp=local_path))
 
         cmd = []
-        cmd.extend(['aws', 's3', 'cp', '--recursive', local_path, s3_path])
-        cmd.extend(['--exclude', '*', '--include', '*/*/meta/manifest.json'])
+
+        if columnfamily is not None:
+            ks, cf = columnfamily.split('.')
+            manifest = '{0}/{1}/meta/manifest.json'.format(ks, cf)
+            s3_path = '{0}/{1}'.format(s3_path, manifest)
+            local_path = '{0}/{1}'.format(local_path, manifest)
+            cmd.extend(['aws', 's3', 'cp', local_path, s3_path])
+        else:
+            cmd.extend(['aws', 's3', 'cp', '--recursive', local_path, s3_path])
+            cmd.extend(['--exclude', '*', '--include', '*/*/meta/manifest.json'])
+
 
         if self.s3_sse:
             cmd.append('--sse')
@@ -1160,13 +1186,13 @@ class ManifestManager(object):
         """
         self.backup_repo.download_manifests(host_id, columnfamily)
 
-    def upload_manifests(self, host_id, manifest_files=None):
+    def upload_manifests(self, host_id, ks_cf=None, manifest_files=None):
         """
         Upload all manifest files to remote storage.
 
         :param list[str] manifest_files: optional list of manifest files to filter for efficiency.
         """
-        self.backup_repo.upload_manifests(host_id, manifest_files)
+        self.backup_repo.upload_manifests(host_id, ks_cf, manifest_files)
 
     def incremental_manifest(self, data_file_directory, incremental_files):
         """
@@ -1194,11 +1220,11 @@ class ManifestManager(object):
                 full_path = '{}{}'.format(data_file_directory, path)
                 filename = path.replace(dir, '').strip('/')
 
-                _, md5sum_result, _ = run_command(['md5sum', full_path])
+                #_, md5sum_result, _ = run_command(['md5sum', full_path])
 
                 manifest['incremental'][filename] = {
                     'created': to_human_readable_time(os.path.getmtime(full_path)),
-                    'md5sum': md5sum_result.split(' ')[0].strip(),
+                    'md5sum': '', #md5sum_result.split(' ')[0].strip(),
                 }
 
             manifest_file_updated = self.save_manifest(keyspace, columnfamily, manifest)
@@ -1595,7 +1621,11 @@ class IncrementalStatus(object):
 
         logging.info('BackupStatus: Download Time {0}'.format(int(time.time() - s)))
 
-        generation = cf_owner.latest_snapshot.manifest_data.keys()[0].split('-')[1]
+        try:
+            generation = cf_owner.latest_snapshot.manifest_data.keys()[0].split('-')[1]
+        except AttributeError:
+            generation = 0
+
         pre = len(remote_incrementals)
         remote_incrementals = filter(lambda n: n.split('-')[1] >= generation, remote_incrementals)
         post = len(remote_incrementals)
@@ -1753,7 +1783,7 @@ class BackupManager(object):
         return incremental_files
 
     @filelocked('/tmp/.incremental_cassandra_backup')
-    def incremental_backup(self, columnfamily=None):
+    def incremental_backup(self, columnfamily=None, thread_limit=4):
         """
         Sync incremental backups that are stored on this cassandra node and upload them to remote storage. This will
         remove incremental files after uploading.
@@ -1768,21 +1798,50 @@ class BackupManager(object):
             logging.critical('You must enable backups to use this feature.')
             raise RuntimeError('Backups are not enabled.')
 
-        self.manifest_manager.download_manifests(self.cassandra.host_id)
+        for ks in self.cassandra.keyspace_schema_data:
+            for cf in self.cassandra.keyspace_schema_data[ks]['tables']:
+                ks_cf = '{ks}.{cf}'.format(ks=ks, cf=cf)
+                try:
+                    self.manifest_manager.download_manifests(self.cassandra.host_id, ks_cf)
+                except Exception as exception:
+                    logging.info('Incremental manifest download for {0} error: {1}'.format(ks_cf, exception))
 
+        all_incremental_files = []
         for data_file_directory in self.cassandra.data_file_directories:
             incremental_files = self.__find_incremental_files(data_file_directory, columnfamily)
-
+            all_incremental_files.append(incremental_files)
             updated_manifest_files = self.manifest_manager.incremental_manifest(data_file_directory, incremental_files)
 
-            self.manifest_manager.upload_manifests(self.cassandra.host_id, updated_manifest_files)
+        for ks in self.cassandra.keyspace_schema_data:
+            for cf in self.cassandra.keyspace_schema_data[ks]['tables']:
+                ks_cf = '{ks}.{cf}'.format(ks=ks, cf=cf)
+                try:
+                    self.manifest_manager.upload_manifests(self.cassandra.host_id, ks_cf)
+                except Exception as exception:
+                    logging.info('Incremental manifest upload for {0} error: {1}'.format(ks_cf, exception))
 
         for data_file_directory in self.cassandra.data_file_directories:
-            incremental_files = self.__find_incremental_files(data_file_directory)
+            files_to_upload = []
+            for path in incremental_files:
+                files_to_upload.append(path + '/')
 
-            self.backup_repo.upload_incremental_backups(self.cassandra.host_id, data_file_directory, columnfamily)
+            logging.info('Preparing to upload {0} files using {1} threads.'.format(len(files_to_upload), thread_limit))
+            for ti in range(0, len(files_to_upload), thread_limit):
+                files_to_upload_subset = files_to_upload[ti:ti + thread_limit]
 
-            logging.info('Clearing incremental files.')
+                logging.info('Starting {0} threads.'.format(len(files_to_upload_subset)))
+                host_threads = []
+                for files_to_upload_subset_item in files_to_upload_subset:
+                    host_thread = threading.Thread(target=self.backup_repo.upload_incremental_backups, args=(
+                        self.cassandra.host_id, data_file_directory, files_to_upload_subset_item))
+                    host_threads.append(host_thread)
+                    host_thread.start()
+
+                for host_thread in host_threads:
+                    host_thread.join()
+
+        logging.info('Clearing incremental files.')
+        for incremental_files in all_incremental_files:
             self.cassandra.clear_incrementals(data_file_directory, incremental_files.items())
 
         logging.info('Finished incremental backup after {0} seconds.'.format(int(time.time() - incremental_start)))
@@ -1959,6 +2018,8 @@ if __name__ == '__main__':
             repo_parser.add_argument('--log-to-file', help='Redirect all logging to file. Output is not redirected.')
             repo_parser.add_argument('--meta-path', help='Path for which to store meta JSON data.',
                                      default='/tmp/onzra_casandra_backup_service')
+            repo_parser.add_argument('--thread-limit', type=int, help='Maximum number of concurrent threads.',
+                                     default=4)
 
             if action == 'status':
                 columnfamily_arg.required = True
@@ -2011,7 +2072,7 @@ if __name__ == '__main__':
             backup_manager.full_backup(args.columnfamily)
         elif args.action == 'incremental':
             try:
-                backup_manager.incremental_backup(args.columnfamily)
+                backup_manager.incremental_backup(args.columnfamily, args.thread_limit)
             except FileLockedError as file_locked_error:
                 logging.warning('Incremental backup in progress using {0} lock file.'.format(file_locked_error))
                 exit(10)
