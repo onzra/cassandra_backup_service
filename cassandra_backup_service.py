@@ -1806,10 +1806,10 @@ class BackupManager(object):
                     self.manifest_manager.download_manifests(self.cassandra.host_id, ks_cf)
                 except Exception as exception:
                     logging.info('Incremental manifest download for {0} error: {1}'.format(ks_cf, exception))
-
+        all_incremental_files = []
         for data_file_directory in self.cassandra.data_file_directories:
             incremental_files = self.__find_incremental_files(data_file_directory, columnfamily)
-
+            all_incremental_files.append(incremental_files)
             updated_manifest_files = self.manifest_manager.incremental_manifest(data_file_directory, incremental_files)
 
         for ks in self.cassandra.keyspace_schema_data:
@@ -1840,7 +1840,8 @@ class BackupManager(object):
                     host_thread.join()
 
         logging.info('Clearing incremental files.')
-        self.cassandra.clear_incrementals(data_file_directory, incremental_files.items())
+        for incremental_files in all_incremental_files:
+            self.cassandra.clear_incrementals(data_file_directory, incremental_files.items())
 
         logging.info('Finished incremental backup after {0} seconds.'.format(int(time.time() - incremental_start)))
 
