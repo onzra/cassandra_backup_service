@@ -377,7 +377,7 @@ class AWSBackupRepo(BaseBackupRepo):
         self.s3_bucket = s3_bucket
         self.s3_sse = s3_ss3
 
-    def upload_snapshot(self, host_id, data_file_directories, snapshot_name):
+    def upload_snapshot(self, host_id, data_file_directories, snapshot_name, thread_limit=4):
         """
         Upload snapshot to remote storage by iterating through provided list of data_file_directories.
 
@@ -385,22 +385,33 @@ class AWSBackupRepo(BaseBackupRepo):
         :param list[str] data_file_directories: list of data file directories.
         :param str snapshot_name: name of snapshot.
         """
+        commands_to_run = []
         for data_file_directory in data_file_directories:
-            cmd = ['aws', 's3', 'sync', data_file_directory]
             bucket = '{0}/{1}'.format(self.s3_bucket, host_id)
 
             logging.info('Uploading full backup {0} dir to bucket: {1}'.format(data_file_directory, bucket))
 
-            cmd.append(bucket)
-            cmd.extend(['--exclude', '*'])
-            cmd.extend(['--include', '*/*/snapshots/{0}/*'.format(snapshot_name)])
-            cmd.extend(['--exclude', '*/*/snapshots/{0}/manifest.json'.format(snapshot_name)])
+            for path in glob.glob('{0}/*/*/snapshots/{1}/'.format(data_file_directory, snapshot_name)):
+                remote_path = '{0}/{1}'.format(bucket, path.replace(data_file_directory, ''))
+                cmd = ['aws', 's3', 'cp', '--recursive', path, remote_path]
+                if self.s3_sse:
+                    cmd.append('--sse')
 
-            if self.s3_sse:
-                cmd.append('--sse')
+                commands_to_run.append(cmd)
 
-            # TODO: error detection
-            run_command(cmd)
+        logging.info('Preparing to upload {0} files using {1} threads.'.format(len(commands_to_run), thread_limit))
+        for ti in range(0, len(commands_to_run), thread_limit):
+            commands_to_run_subset = commands_to_run[ti:ti + thread_limit]
+
+            logging.info('Starting {0} threads.'.format(len(commands_to_run_subset)))
+            upload_threads = []
+            for command_to_run in commands_to_run_subset:
+                upload_thread = threading.Thread(target=run_command, args=(command_to_run,))
+                upload_threads.append(upload_thread)
+                upload_thread.start()
+
+            for upload_thread in upload_threads:
+                upload_thread.join()
 
     def upload_incremental_backups(self, host_id, data_file_directory, filepath=None, columnfamily=None):
         """
@@ -1720,7 +1731,7 @@ class BackupManager(object):
         self.backup_repo = backup_repo
         self.manifest_manager = manifest_manager
 
-    def full_backup(self, columnfamily=None):
+    def full_backup(self, columnfamily=None, thread_limit=4):
         """
         Run a full backup (snapshot) on this cassandra node and upload it to remote storage.
 
@@ -1742,7 +1753,7 @@ class BackupManager(object):
             self.manifest_manager.upload_manifests(self.cassandra.host_id)
 
             self.backup_repo.upload_snapshot(self.cassandra.host_id, self.cassandra.data_file_directories,
-                                             snapshot_name)
+                                             snapshot_name, thread_limit)
 
             logging.info('Clearing snapshot {0} data'.format(snapshot_name))
             self.cassandra.nodetool_clearsnapshot(snapshot_name)
@@ -1830,15 +1841,15 @@ class BackupManager(object):
                 files_to_upload_subset = files_to_upload[ti:ti + thread_limit]
 
                 logging.info('Starting {0} threads.'.format(len(files_to_upload_subset)))
-                host_threads = []
+                upload_threads = []
                 for files_to_upload_subset_item in files_to_upload_subset:
-                    host_thread = threading.Thread(target=self.backup_repo.upload_incremental_backups, args=(
+                    upload_thread = threading.Thread(target=self.backup_repo.upload_incremental_backups, args=(
                         self.cassandra.host_id, data_file_directory, files_to_upload_subset_item))
-                    host_threads.append(host_thread)
-                    host_thread.start()
+                    upload_threads.append(upload_thread)
+                    upload_thread.start()
 
-                for host_thread in host_threads:
-                    host_thread.join()
+                for upload_thread in upload_threads:
+                    upload_thread.join()
 
         logging.info('Clearing incremental files.')
         for incremental_files in all_incremental_files:
