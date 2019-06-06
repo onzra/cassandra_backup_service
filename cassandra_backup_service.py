@@ -209,14 +209,17 @@ class BaseBackupRepo(object):
     Base backup repository class.
     """
     args = None
+    store_md5sum = False
 
-    def __init__(self, meta_path):
+    def __init__(self, meta_path, store_md5sum=False):
         """
         Init.
 
         :param str meta_path: meta path.
+        :param bool store_md5sum: optionally instruct backup repository to store MD5 checksum for stored files.
         """
         self.meta_path = meta_path
+        self.store_md5sum = store_md5sum
 
     @abc.abstractmethod
     def download_manifests(self, host_id, columnfamily):
@@ -980,6 +983,18 @@ class ManifestManager(object):
         self.meta_path = meta_path
         self.backup_repo = backup_repo
 
+    def get_md5sum(self, path):
+        """
+        Get MD5 checksum string for provided file path.
+
+        :param str path: path to file for which to get MD5 checksum.
+
+        :rtype: str
+        :return: MD5 checksum string.
+        """
+        _, md5sum_result, _ = run_command(['md5sum', path])
+        return md5sum_result.split(' ')[0].strip()
+
     def get_host_list_file_path(self):
         """
         Generate path to the host list file describing the Cassandra cluster's current state.
@@ -1074,12 +1089,12 @@ class ManifestManager(object):
                         if filename == 'manifest.json':
                             continue
 
-                        _, md5sum_result, _ = run_command(['md5sum', glob_filename])
-
                         snapshot_manifest_data[filename] = {
                             'created': to_human_readable_time(os.path.getmtime(glob_filename)),
-                            'md5sum': md5sum_result.split(' ')[0].strip(),
                         }
+
+                        if self.backup_repo.store_md5sum:
+                            snapshot_manifest_data[filename]['md5sum'] = self.get_md5sum(glob_filename)
 
                 manifest['full'][snapshot_name] = snapshot_manifest_data
                 self.save_manifest(ks, cf, manifest)
@@ -1220,12 +1235,11 @@ class ManifestManager(object):
                 full_path = '{}{}'.format(data_file_directory, path)
                 filename = path.replace(dir, '').strip('/')
 
-                #_, md5sum_result, _ = run_command(['md5sum', full_path])
-
                 manifest['incremental'][filename] = {
                     'created': to_human_readable_time(os.path.getmtime(full_path)),
-                    'md5sum': '', #md5sum_result.split(' ')[0].strip(),
                 }
+                if self.backup_repo.store_md5sum:
+                    manifest['incremental'][filename]['md5sum'] = self.get_md5sum(full_path)
 
             manifest_file_updated = self.save_manifest(keyspace, columnfamily, manifest)
             manifests_updated.append(manifest_file_updated)
