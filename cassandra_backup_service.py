@@ -814,6 +814,8 @@ class Cassandra(object):
         ]
         if args.cqlsh_host:
             cmd.append(args.cqlsh_host)
+        if args.cqlsh_ssl:
+            cmd.append('--ssl')
         return_code, out, error = run_command(cmd, execute_during_dry_run=True)
         for line in out.split("\n"):
             if not line.startswith('CREATE KEYSPACE '):
@@ -849,6 +851,8 @@ class Cassandra(object):
 
         if args.cqlsh_host:
             cmd.append(args.cqlsh_host)
+        if args.cqlsh_ssl:
+            cmd.append('--ssl')
 
         _, out, _ = run_command(cmd)
 
@@ -1920,6 +1924,9 @@ if __name__ == '__main__':
             # cqlsh options
             repo_parser.add_argument('--cqlsh-host', dest='cqlsh_host', required=False, default=socket.getfqdn(),
                                      help='Sets the cqlsh host that will be used to run cqlsh commands')
+            repo_parser.add_argument('--cqlsh-ssl', dest='cqlsh_ssl', required=False, default=False, action='store_true'
+                                     help='Uses SSL when connecting to CQLSH')
+
             # Debugging
             repo_parser.add_argument('--dry-run', dest='dry_run', action='store_true', default=False,
                                      help='Instead of running commands, print simulated commands that would have run.')
