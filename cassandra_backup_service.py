@@ -1924,7 +1924,7 @@ if __name__ == '__main__':
             # cqlsh options
             repo_parser.add_argument('--cqlsh-host', dest='cqlsh_host', required=False, default=socket.getfqdn(),
                                      help='Sets the cqlsh host that will be used to run cqlsh commands')
-            repo_parser.add_argument('--cqlsh-ssl', dest='cqlsh_ssl', required=False, default=False, action='store_true'
+            repo_parser.add_argument('--cqlsh-ssl', dest='cqlsh_ssl', required=False, default=False, action='store_true',
                                      help='Uses SSL when connecting to CQLSH')
 
             # Debugging
