@@ -204,6 +204,25 @@ def run_command(cmd, execute_during_dry_run=False):
     return p.returncode, out, err
 
 
+def append_cqlsh_args(cmd, args):
+    """
+    Update arguments list for CQLSH command.
+
+    :param list cmd: command arguments list to update.
+    :param dict args: ArgParser dict.
+    """
+    if args.cqlsh_host:
+        cmd.append(args.cqlsh_host)
+    if args.cqlsh_ssl:
+        cmd.append('--ssl')
+    if args.cqlsh_user:
+        cmd.append('-u')
+        cmd.append(args.cqlsh_user)
+    if args.cqlsh_user:
+        cmd.append('-p')
+        cmd.append(args.cqlsh_pass)
+
+
 class BaseBackupRepo(object):
     """
     Base backup repository class.
@@ -739,7 +758,8 @@ class Cassandra(object):
         :param Namespace args: args.
         """
         self.config_file = args.cassandra_config
-        self.cqlsh_host = args.cqlsh_host
+        # TODO: This isn't used?
+        # self.cqlsh_host = args.cqlsh_host
 
         if 'columnfamily' in args:
             self.keyspace_columnfamily_filter = args.columnfamily
@@ -853,10 +873,9 @@ class Cassandra(object):
             '-e',
             'DESCRIBE KEYSPACE {0}'.format(keyspace),
         ]
-        if args.cqlsh_host:
-            cmd.append(args.cqlsh_host)
-        if args.cqlsh_ssl:
-            cmd.append('--ssl')
+
+        append_cqlsh_args(cmd, args)
+
         return_code, out, error = run_command(cmd, execute_during_dry_run=True)
         for line in out.split("\n"):
             if not line.startswith('CREATE KEYSPACE '):
@@ -890,10 +909,7 @@ class Cassandra(object):
             'SELECT JSON keyspace_name, columnfamily_name, cf_id FROM system.schema_columnfamilies'
         ]
 
-        if args.cqlsh_host:
-            cmd.append(args.cqlsh_host)
-        if args.cqlsh_ssl:
-            cmd.append('--ssl')
+        append_cqlsh_args(cmd, args)
 
         _, out, _ = run_command(cmd)
 
@@ -2064,6 +2080,10 @@ if __name__ == '__main__':
                                      help='Sets the cqlsh host that will be used to run cqlsh commands')
             repo_parser.add_argument('--cqlsh-ssl', dest='cqlsh_ssl', required=False, default=False, action='store_true',
                                      help='Uses SSL when connecting to CQLSH')
+            repo_parser.add_argument('--cqlsh-user', dest='cqlsh_user', required=False,
+                                     help='Optionally provide username to use when connecting to CQLSH')
+            repo_parser.add_argument('--cqlsh-pass', dest='cqlsh_pass', required=False,
+                                     help='Optionally provide password to use when connecting to CQLSH')
 
             # Debugging
             repo_parser.add_argument('--dry-run', dest='dry_run', action='store_true', default=False,
