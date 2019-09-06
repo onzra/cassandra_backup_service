@@ -176,8 +176,14 @@ def run_command(cmd, execute_during_dry_run=False):
     :return: (return code, stdout, stderr)
     """
     global DRY_RUN
+
+    sanitized_cmd = cmd
+    if 'cqlsh' in cmd and '-p' in cmd:
+        pindex = cmd.index('-p')
+        sanitized_cmd[pindex + 1] = '********'
+
     if DRY_RUN:
-        logging.info('$ {0}'.format(' '.join(cmd)))
+        logging.info('$ {0}'.format(' '.join(sanitized_cmd)))
         if not execute_during_dry_run:
             return 0, '', ''
 
@@ -192,7 +198,8 @@ def run_command(cmd, execute_during_dry_run=False):
         if p.returncode == 2 and (cmd[0] == 'aws' and cmd[1] == 's3' and cmd[2] in ('sync', 'cp')):
             logger.warn('Command {0} exited with code {1}. STDERR: "{2}"'.format(' '.join(cmd), p.returncode, err))
         else:
-            raise Exception('Command {0} exited with code {1}. STDERR: "{2}"'.format(' '.join(cmd), p.returncode, err))
+            raise Exception('Command {0} exited with code {1}. STDERR: "{2}"'.format(
+                ' '.join(sanitized_cmd), p.returncode, err))
     logging.debug('Return code: {0}'.format(p.returncode))
     if out:
         if '\n' in out.strip():
