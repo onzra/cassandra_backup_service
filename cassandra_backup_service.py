@@ -794,7 +794,7 @@ class Cassandra(object):
             f = open(self.config_file, 'r')
             cassandra_configfile = f.read()
             f.close()
-            self.config = yaml.load(cassandra_configfile)
+            self.config = yaml.load(cassandra_configfile, Loader=yaml.FullLoader)
         except Exception as exception:
             logging.critical('Could not load cassandra config file from {0}. Error: {1}'.format(
                 CASSANDRA_CONFIG_FILE, str(exception)))
