@@ -176,8 +176,14 @@ def run_command(cmd, execute_during_dry_run=False):
     :return: (return code, stdout, stderr)
     """
     global DRY_RUN
+
+    sanitized_cmd = list(cmd)
+    if 'cqlsh' in cmd and '-p' in cmd:
+        pindex = cmd.index('-p')
+        sanitized_cmd[pindex + 1] = '********'
+
     if DRY_RUN:
-        logging.info('$ {0}'.format(' '.join(cmd)))
+        logging.info('$ {0}'.format(' '.join(sanitized_cmd)))
         if not execute_during_dry_run:
             return 0, '', ''
 
@@ -192,7 +198,8 @@ def run_command(cmd, execute_during_dry_run=False):
         if p.returncode == 2 and (cmd[0] == 'aws' and cmd[1] == 's3' and cmd[2] in ('sync', 'cp')):
             logger.warn('Command {0} exited with code {1}. STDERR: "{2}"'.format(' '.join(cmd), p.returncode, err))
         else:
-            raise Exception('Command {0} exited with code {1}. STDERR: "{2}"'.format(' '.join(cmd), p.returncode, err))
+            raise Exception('Command {0} exited with code {1}. STDERR: "{2}"'.format(
+                ' '.join(sanitized_cmd), p.returncode, err))
     logging.debug('Return code: {0}'.format(p.returncode))
     if out:
         if '\n' in out.strip():
@@ -202,6 +209,25 @@ def run_command(cmd, execute_during_dry_run=False):
     if err:
         logging.debug('Error: {0}'.format(err))
     return p.returncode, out, err
+
+
+def append_cqlsh_args(cmd, args):
+    """
+    Update arguments list for CQLSH command.
+
+    :param list cmd: command arguments list to update.
+    :param dict args: ArgParser dict.
+    """
+    if args.cqlsh_host:
+        cmd.append(args.cqlsh_host)
+    if args.cqlsh_ssl:
+        cmd.append('--ssl')
+    if args.cqlsh_user:
+        cmd.append('-u')
+        cmd.append(args.cqlsh_user)
+    if args.cqlsh_user:
+        cmd.append('-p')
+        cmd.append(args.cqlsh_pass)
 
 
 class BaseBackupRepo(object):
@@ -739,7 +765,8 @@ class Cassandra(object):
         :param Namespace args: args.
         """
         self.config_file = args.cassandra_config
-        self.cqlsh_host = args.cqlsh_host
+        # TODO: This isn't used?
+        # self.cqlsh_host = args.cqlsh_host
 
         if 'columnfamily' in args:
             self.keyspace_columnfamily_filter = args.columnfamily
@@ -853,10 +880,9 @@ class Cassandra(object):
             '-e',
             'DESCRIBE KEYSPACE {0}'.format(keyspace),
         ]
-        if args.cqlsh_host:
-            cmd.append(args.cqlsh_host)
-        if args.cqlsh_ssl:
-            cmd.append('--ssl')
+
+        append_cqlsh_args(cmd, args)
+
         return_code, out, error = run_command(cmd, execute_during_dry_run=True)
         for line in out.split("\n"):
             if not line.startswith('CREATE KEYSPACE '):
@@ -890,10 +916,7 @@ class Cassandra(object):
             'SELECT JSON keyspace_name, columnfamily_name, cf_id FROM system.schema_columnfamilies'
         ]
 
-        if args.cqlsh_host:
-            cmd.append(args.cqlsh_host)
-        if args.cqlsh_ssl:
-            cmd.append('--ssl')
+        append_cqlsh_args(cmd, args)
 
         _, out, _ = run_command(cmd)
 
@@ -2041,6 +2064,10 @@ if __name__ == '__main__':
                                      help='Sets the cqlsh host that will be used to run cqlsh commands')
             repo_parser.add_argument('--cqlsh-ssl', dest='cqlsh_ssl', required=False, default=False, action='store_true',
                                      help='Uses SSL when connecting to CQLSH')
+            repo_parser.add_argument('--cqlsh-user', dest='cqlsh_user', required=False,
+                                     help='Optionally provide username to use when connecting to CQLSH')
+            repo_parser.add_argument('--cqlsh-pass', dest='cqlsh_pass', required=False,
+                                     help='Optionally provide password to use when connecting to CQLSH')
 
             # Debugging
             repo_parser.add_argument('--dry-run', dest='dry_run', action='store_true', default=False,
