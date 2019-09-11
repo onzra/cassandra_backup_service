@@ -187,7 +187,7 @@ def run_command(cmd, execute_during_dry_run=False):
         if not execute_during_dry_run:
             return 0, '', ''
 
-    logging.debug('Run command: {0}'.format(cmd))
+    logging.debug('Run command: {0}'.format(sanitized_cmd))
     p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     out, err = p.communicate()
 
@@ -2150,7 +2150,7 @@ if __name__ == '__main__':
                 exit(10)
 
     except Exception as exception:
-        logging.exception('Exception during action: {0}'.format(action))
+        logging.exception('Exception during action: {0}'.format(args.action))
         raise
 
     if args.action in ('status', 'restore'):
