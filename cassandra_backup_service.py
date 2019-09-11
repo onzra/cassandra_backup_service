@@ -177,7 +177,7 @@ def run_command(cmd, execute_during_dry_run=False):
     """
     global DRY_RUN
 
-    sanitized_cmd = cmd
+    sanitized_cmd = list(cmd)
     if 'cqlsh' in cmd and '-p' in cmd:
         pindex = cmd.index('-p')
         sanitized_cmd[pindex + 1] = '********'
