@@ -1164,8 +1164,31 @@ class ManifestManager(object):
         output = {}
         host_lists = self.backup_repo.list_host_lists()
 
-        host_ids = set([hl.split('_')[0] for hl in host_lists])
+        # Identify the latest host list file.
+        latest_timestamp = 0
+        host_id = None
+        for hl in host_lists:
+            host_list_timestamp = from_human_readable_time(
+                '{} {}'.format(hl.split('_')[1], hl.split('_')[2].replace('-', ':')).replace('.json', '')
+            )
+            if host_list_timestamp > latest_timestamp:
+                latest_timestamp = host_list_timestamp
+                host_id = hl.split('_')[0]
 
+        latest_timestamp_filename_string = filename_strip(to_human_readable_time(latest_timestamp))
+        host_list_path = self.backup_repo.download_host_list(host_id, latest_timestamp_filename_string)
+
+        # Download the latest host list file and extract host ids from cluster data.
+        host_ids = []
+        with open(host_list_path, 'r') as host_list_file:
+            host_list_data = json.load(host_list_file)
+
+            for dc in host_list_data['cluster']:
+                host_ids += host_list_data['cluster'][dc].keys()
+
+        host_ids = set(host_ids)
+
+        # Get host data from latest host list for list of latest host ids.
         for host_id in host_ids:
             host_lists_for_host_id = [hl for hl in host_lists if host_id in hl]
             host_list_timestamps = [
