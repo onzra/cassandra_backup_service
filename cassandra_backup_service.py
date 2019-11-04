@@ -1219,12 +1219,7 @@ class ManifestManager(object):
                     '{} {}'.format(hl.split('_')[1], hl.split('_')[2].replace('-', ':')).replace('.json', '')
                 ) for hl in host_lists_for_host_id
             ]
-            try:
-                latest_timestamp = max(host_list_timestamps)
-            except ValueError:
-                logging.warn('Cannot determine latest timestamp for host: {0}'.format(host_id))
-                continue
-
+            latest_timestamp = max(host_list_timestamps)
             latest_timestamp_filename_string = filename_strip(to_human_readable_time(latest_timestamp))
             host_list_path = self.backup_repo.download_host_list(host_id, latest_timestamp_filename_string)
             with open(host_list_path, 'r') as host_list_file:
