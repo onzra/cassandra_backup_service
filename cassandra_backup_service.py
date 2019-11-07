@@ -1190,18 +1190,26 @@ class ManifestManager(object):
 
         # Get host data from latest host list for list of latest host ids.
         for host_id in host_ids:
+            logging.debug('Getting latest timestamp for host: {0}'.format(host_id))
+            logging.debug('{0}'.format(host_lists))
             host_lists_for_host_id = [hl for hl in host_lists if host_id in hl]
+            logging.debug('Host lists with {0} entries filtered to {1} entries.'.format(len(host_lists),
+                                                                                        len(host_lists_for_host_id)))
             host_list_timestamps = [
                 from_human_readable_time(
                     '{} {}'.format(hl.split('_')[1], hl.split('_')[2].replace('-', ':')).replace('.json', '')
                 ) for hl in host_lists_for_host_id
             ]
-            latest_timestamp = max(host_list_timestamps)
-            latest_timestamp_filename_string = filename_strip(to_human_readable_time(latest_timestamp))
-            host_list_path = self.backup_repo.download_host_list(host_id, latest_timestamp_filename_string)
-            with open(host_list_path, 'r') as host_list_file:
-                host_list_data = json.load(host_list_file)
-            output[host_id] = host_list_data
+            try:
+                latest_timestamp = max(host_list_timestamps)
+                latest_timestamp_filename_string = filename_strip(to_human_readable_time(latest_timestamp))
+                host_list_path = self.backup_repo.download_host_list(host_id, latest_timestamp_filename_string)
+                with open(host_list_path, 'r') as host_list_file:
+                    host_list_data = json.load(host_list_file)
+                output[host_id] = host_list_data
+            except ValueError as value_error:
+                if host_id not in output:
+                    output[host_id] = value_error
 
         return output
 
@@ -1312,6 +1320,13 @@ class BackupStatus(object):
             self.restore_time = None
 
         host_lists = self.manifest_manager.get_host_lists()
+
+        # TODO: Update the status function to move back in time to earlier manifests / host lists files.
+        if all([type(host_lists[hl]) is ValueError for hl in host_lists]):
+            logging.warn('Cannot determine latest timestamp for host: {0}'.format(','.join(host_lists.keys())))
+            raise host_lists[host_lists.keys()[0]]
+
+        host_lists = {hl: host_lists[hl] for hl in host_lists if type(host_lists[hl]) is dict}
 
         if host_ids is not None:
             host_lists = {hl: host_lists[hl] for hl in host_lists if hl in host_ids}
