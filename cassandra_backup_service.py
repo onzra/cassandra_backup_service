@@ -1212,12 +1212,6 @@ class ManifestManager(object):
                         if filename == 'manifest.json':
                             continue
 
-                        if self.retention_days:
-                            retention_cutoff = int(time.time()) - (self.retention_days * 86000)
-
-                            if os.path.getmtime(glob_filename) < retention_cutoff:
-                                continue
-
                         snapshot_manifest_data[filename] = {
                             'created': to_human_readable_time(os.path.getmtime(glob_filename)),
                         }
@@ -1339,6 +1333,28 @@ class ManifestManager(object):
         :return: path of manifest file that was saved.
         """
         manifest['updated'] = to_human_readable_time()
+
+        if self.retention_days:
+            retention_cutoff = int(time.time()) - (self.retention_days * 86000)
+
+            filtered_incrementals = {}
+            for incremental in manifest['incremental']:
+                created_timestamp = from_human_readable_time(manifest['incremental'][incremental]['created'])
+                if created_timestamp >= retention_cutoff:
+                    filtered_incrementals[incremental] = manifest['incremental'][incremental]
+            manifest['incremental'] = filtered_incrementals
+
+            filtered_full = {}
+            for full in manifest['full']:
+                for full_item in manifest['full'][full]:
+
+                    created_timestamp = from_human_readable_time(manifest['full'][full][full_item]['created'])
+                    if created_timestamp >= retention_cutoff:
+                        if full not in filtered_incrementals:
+                            filtered_full[full] = {}
+
+                        filtered_full[full][full_item] = manifest['full'][full][full_item]
+            manifest['full'] = filtered_full
 
         manifest_file_path = self.get_manifest_file_path(keyspace, columnfamily)
 
