@@ -2281,6 +2281,7 @@ if __name__ == '__main__':
     if args.meta_path:
         meta_path = args.meta_path
 
+    retention_days = None
     if args.action in ('full', 'incremental'):
         cass = Cassandra(args)
         meta_path = cass.meta_path
