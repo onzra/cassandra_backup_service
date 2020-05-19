@@ -866,6 +866,7 @@ class Cassandra(object):
         :rtype: dict
         :return: Dictionary of keyspace: [column families]
         """
+        # TODO: nodetool cfstats is replaced with nodetool tablestats in 2.2. cfstats exists as a deprecated reference.
         cmd = ['nodetool', 'cfstats']
         # TODO: Fix this. Cannot filter here because it breaks status command.
         # if self.keyspace_columnfamily_filter is not None:
@@ -876,7 +877,8 @@ class Cassandra(object):
         keyspace = None
 
         line_start = 'Keyspace: '
-        if get_version()[0] == '3':
+        version = get_version()
+        if version[0] == '3' and version[1] != '0':
             line_start = 'Keyspace : '
 
         for line in out.split("\n"):
