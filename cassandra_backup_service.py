@@ -822,6 +822,10 @@ class Cassandra(object):
                 datacenter = line.split('Datacenter: ')[1]
                 self.cluster_data[datacenter] = {}
             else:
+                # TODO: When a node is down the load quantity is "?" and load units is missing.
+                if '?' in line:
+                    line = line.replace('?', '? ?')
+
                 status_state, address, load_qty, load_units, tokens, owns, host_id, rack = line.split()
                 status = status_state[0]
                 self.cluster_data[datacenter][host_id] = {
