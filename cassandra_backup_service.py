@@ -26,6 +26,7 @@ import logging
 import os
 import shutil
 import socket
+import stat
 import subprocess
 import sys
 import tempfile
@@ -2167,6 +2168,10 @@ if __name__ == '__main__':
     try:
         if args.action == 'full':
             backup_manager.full_backup(args.columnfamily)
+            full_status_file = '/tmp/onzra_cassandra_backup_service-full.status'
+            with open(full_status_file, 'a'):
+                os.utime(full_status_file, None)
+            os.chmod(full_status_file, stat.S_IRWXO | stat.S_IRWXG | stat.S_IRWXU)
         elif args.action == 'incremental':
             try:
                 backup_manager.incremental_backup(args.columnfamily, args.thread_limit)
