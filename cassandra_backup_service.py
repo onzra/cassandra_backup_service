@@ -465,14 +465,18 @@ class AWSBackupRepo(BaseBackupRepo):
             remote_path = '{0}/{1}'.format(bucket, filepath)
             if local_path.endswith('/'):
                 cmd = ['aws', 's3', 'cp', '--recursive', local_path, remote_path]
+                cmd.extend(['--exclude', '{0}/.*'.format(local_path)])
             else:
                 cmd = ['aws', 's3', 'cp', local_path, remote_path]
+                cmd.extend(['--exclude', '{0}/.*'.format(local_path)])
         else:
             if columnfamily:
                 ks, cf = columnfamily.split('.')
                 cmd.extend(['--include', '{0}{1}/{2}*/backups/*'.format(data_file_directory, ks, cf)])
+                cmd.extend(['--exclude', '{0}{1}/{2}*/backups/*/.*'.format(data_file_directory, ks, cf)])
             else:
                 cmd.extend(['--include', '{0}*/*/backups/*'.format(data_file_directory)])
+                cmd.extend(['--exclude', '{0}*/*/backups/*/.*'.format(data_file_directory)])
 
         if self.s3_sse:
             cmd.append('--sse')
@@ -1722,7 +1726,7 @@ class IncrementalStatus(object):
             generation = 0
 
         pre = len(remote_incrementals)
-        remote_incrementals = filter(lambda n: n.split('-')[1] >= generation, remote_incrementals)
+        remote_incrementals = filter(lambda n: (n[0] != '.' and n.split('-')[1] >= generation), remote_incrementals)
         post = len(remote_incrementals)
         logging.info('BackupStatus: Reduced list size from {0} to {1}: {2} less.'.format(pre, post, pre - post))
 
