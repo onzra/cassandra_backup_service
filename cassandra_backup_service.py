@@ -1003,6 +1003,9 @@ class Cassandra(object):
                 # Don't delete the /backups/ directory as sstables may have been written during the upload operation.
                 if incremental_file.endswith('/backups'):
                     continue
+                # Don't delete the index files directory.
+                if incremental_file.endswith('_idx/'):
+                    continue
                 path = os.path.join(data_file_directory, incremental_file)
                 logging.info('Removing incremental path: {0}'.format(path))
                 os.remove(path)
@@ -1301,6 +1304,10 @@ class ManifestManager(object):
 
         logging.info('Updating incremental file list manifests...')
         for dir in incremental_files:
+            # Skip adding index files to the manifest.
+            if '/.' in dir and dir.endswith('_idx'):
+                continue
+
             dir_split = dir.split('/')
             keyspace = dir_split[0]
             columnfamily = '-'.join(dir_split[1].split('-')[0:-1])
@@ -1863,6 +1870,13 @@ class BackupManager(object):
             # Find each <ks>/<cf>/backups/<sstable>
             if root.endswith('/backups'):
                 root = root[len(data_file_directory):]
+                for file in files:
+                    if root not in incremental_files.keys():
+                        incremental_files[root] = []
+                    filename = os.path.join(root, file)
+                    incremental_files[root].append(filename)
+            if '/.' in root and root.endswith('_idx'):
+                root = root[len(data_file_directory):] + '/'
                 for file in files:
                     if root not in incremental_files.keys():
                         incremental_files[root] = []
