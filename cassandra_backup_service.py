@@ -1875,7 +1875,7 @@ class BackupManager(object):
                         incremental_files[root] = []
                     filename = os.path.join(root, file)
                     incremental_files[root].append(filename)
-            if '/.' in root and root.endswith('_idx'):
+            if '/backups' in root and '/.' in root and root.endswith('_idx'):
                 root = root[len(data_file_directory):] + '/'
                 for file in files:
                     if root not in incremental_files.keys():
