@@ -212,6 +212,21 @@ def run_command(cmd, execute_during_dry_run=False):
     return p.returncode, out, err
 
 
+def get_version():
+    """
+    Get Cassandra version through CQLSH.
+
+    :rtype: (str, str, str)
+    :return: major, minor, patch.
+    """
+    cmd = ['cqlsh', '-e', 'SHOW VERSION',]
+    append_cqlsh_args(cmd, args)
+
+    return_code, out, error = run_command(cmd, execute_during_dry_run=True)
+    major, minor, patch = out.split('|')[1].strip().split(' ')[1].split('.')
+    return major, minor, patch
+
+
 def append_cqlsh_args(cmd, args):
     """
     Update arguments list for CQLSH command.
@@ -860,6 +875,7 @@ class Cassandra(object):
         :rtype: dict
         :return: Dictionary of keyspace: [column families]
         """
+        # TODO: nodetool cfstats is replaced with nodetool tablestats in 2.2. cfstats exists as a deprecated reference.
         cmd = ['nodetool', 'cfstats']
         # TODO: Fix this. Cannot filter here because it breaks status command.
         # if self.keyspace_columnfamily_filter is not None:
@@ -868,9 +884,16 @@ class Cassandra(object):
         return_code, out, error = run_command(cmd, execute_during_dry_run=True)
         # Build a dictionary of keyspace: [column families]
         keyspace = None
+
+        line_start = 'Keyspace: '
+        version = get_version()
+        if version[0] == '3' and version[1] != '0':
+            line_start = 'Keyspace : '
+
         for line in out.split("\n"):
-            if line.startswith('Keyspace: '):
-                keyspace = line.split('Keyspace: ')[1]
+            if line.startswith(line_start):
+                keyspace = line.split(line_start)[1]
+
                 self.keyspace_schema_data[keyspace] = self.__enumerate_keyspace_replication(keyspace)
                 self.keyspace_schema_data[keyspace]['tables'] = []
             elif line.startswith("\t\tTable: "):
@@ -919,11 +942,20 @@ class Cassandra(object):
         :rtype: dict
         :return: dictionary of columnfamily id mapping for columnfamilies in keyspaces.
         """
-        cmd = [
-            'cqlsh',
-            '-e',
-            'SELECT JSON keyspace_name, columnfamily_name, cf_id FROM system.schema_columnfamilies'
-        ]
+        version = get_version()
+
+        if version[0] == '2':
+            cmd = [
+                'cqlsh',
+                '-e',
+                'SELECT JSON keyspace_name, columnfamily_name, cf_id FROM system.schema_columnfamilies'
+            ]
+        elif version[0] == '3':
+            cmd = [
+                'cqlsh',
+                '-e',
+                'SELECT JSON keyspace_name, table_name as columnfamily_name, id as cf_id FROM system_schema.tables'
+            ]
 
         append_cqlsh_args(cmd, args)
 
