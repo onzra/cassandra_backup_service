@@ -1771,7 +1771,7 @@ class IncrementalStatus(object):
 
         # Separate list of remote incrementals into individual lists by file.
         suffixes = ['big-CompressionInfo.db', 'big-Data.db', 'big-Digest.adler32', 'big-Filter.db', 'big-Index.db',
-                    'big-Statistics.db', 'big-Summary.db', 'big-TOC.txt']
+                    'big-Statistics.db', 'big-Summary.db', 'big-TOC.txt', 'big-Digest.crc32']
         suffix_remote_incrementals = {}
         for suffix in suffixes:
             suffix_remote_incrementals[suffix] = set([ri for ri in remote_incrementals if ri.endswith(suffix)])
