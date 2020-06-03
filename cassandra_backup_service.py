@@ -2110,7 +2110,11 @@ class BackupManager(object):
                             if not os.path.exists(os.path.dirname(restore_path)):
                                 os.makedirs(os.path.dirname(restore_path))
 
-                            os.rename(downloaded_path, restore_path)
+                            if os.path.exists(downloaded_path):
+                                os.rename(downloaded_path, restore_path)
+                            else:
+                                logging.warning('Incremental file in manifest does not exist: {0}.'.format(
+                                    downloaded_path))
 
             if username is None and password is None:
                 try:
