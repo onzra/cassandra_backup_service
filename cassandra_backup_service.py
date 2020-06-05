@@ -26,6 +26,7 @@ import logging
 import os
 import shutil
 import socket
+import stat
 import subprocess
 import sys
 import tempfile
@@ -176,12 +177,18 @@ def run_command(cmd, execute_during_dry_run=False):
     :return: (return code, stdout, stderr)
     """
     global DRY_RUN
+
+    sanitized_cmd = list(cmd)
+    if 'cqlsh' in cmd and '-p' in cmd:
+        pindex = cmd.index('-p')
+        sanitized_cmd[pindex + 1] = '********'
+
     if DRY_RUN:
-        logging.info('$ {0}'.format(' '.join(cmd)))
+        logging.info('$ {0}'.format(' '.join(sanitized_cmd)))
         if not execute_during_dry_run:
             return 0, '', ''
 
-    logging.debug('Run command: {0}'.format(cmd))
+    logging.debug('Run command: {0}'.format(sanitized_cmd))
     p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     out, err = p.communicate()
 
@@ -192,7 +199,8 @@ def run_command(cmd, execute_during_dry_run=False):
         if p.returncode == 2 and (cmd[0] == 'aws' and cmd[1] == 's3' and cmd[2] in ('sync', 'cp')):
             logger.warn('Command {0} exited with code {1}. STDERR: "{2}"'.format(' '.join(cmd), p.returncode, err))
         else:
-            raise Exception('Command {0} exited with code {1}. STDERR: "{2}"'.format(' '.join(cmd), p.returncode, err))
+            raise Exception('Command {0} exited with code {1}. STDERR: "{2}"'.format(
+                ' '.join(sanitized_cmd), p.returncode, err))
     logging.debug('Return code: {0}'.format(p.returncode))
     if out:
         if '\n' in out.strip():
@@ -202,6 +210,40 @@ def run_command(cmd, execute_during_dry_run=False):
     if err:
         logging.debug('Error: {0}'.format(err))
     return p.returncode, out, err
+
+
+def get_version():
+    """
+    Get Cassandra version through CQLSH.
+
+    :rtype: (str, str, str)
+    :return: major, minor, patch.
+    """
+    cmd = ['cqlsh', '-e', 'SHOW VERSION',]
+    append_cqlsh_args(cmd, args)
+
+    return_code, out, error = run_command(cmd, execute_during_dry_run=True)
+    major, minor, patch = out.split('|')[1].strip().split(' ')[1].split('.')
+    return major, minor, patch
+
+
+def append_cqlsh_args(cmd, args):
+    """
+    Update arguments list for CQLSH command.
+
+    :param list cmd: command arguments list to update.
+    :param dict args: ArgParser dict.
+    """
+    if args.cqlsh_host:
+        cmd.append(args.cqlsh_host)
+    if args.cqlsh_ssl:
+        cmd.append('--ssl')
+    if args.cqlsh_user:
+        cmd.append('-u')
+        cmd.append(args.cqlsh_user)
+    if args.cqlsh_user:
+        cmd.append('-p')
+        cmd.append(args.cqlsh_pass)
 
 
 class BaseBackupRepo(object):
@@ -438,14 +480,18 @@ class AWSBackupRepo(BaseBackupRepo):
             remote_path = '{0}/{1}'.format(bucket, filepath)
             if local_path.endswith('/'):
                 cmd = ['aws', 's3', 'cp', '--recursive', local_path, remote_path]
+                cmd.extend(['--exclude', '{0}/.*'.format(local_path)])
             else:
                 cmd = ['aws', 's3', 'cp', local_path, remote_path]
+                cmd.extend(['--exclude', '{0}/.*'.format(local_path)])
         else:
             if columnfamily:
                 ks, cf = columnfamily.split('.')
                 cmd.extend(['--include', '{0}{1}/{2}*/backups/*'.format(data_file_directory, ks, cf)])
+                cmd.extend(['--exclude', '{0}{1}/{2}*/backups/*/.*'.format(data_file_directory, ks, cf)])
             else:
                 cmd.extend(['--include', '{0}*/*/backups/*'.format(data_file_directory)])
+                cmd.extend(['--exclude', '{0}*/*/backups/*/.*'.format(data_file_directory)])
 
         if self.s3_sse:
             cmd.append('--sse')
@@ -739,7 +785,8 @@ class Cassandra(object):
         :param Namespace args: args.
         """
         self.config_file = args.cassandra_config
-        self.cqlsh_host = args.cqlsh_host
+        # TODO: This isn't used?
+        # self.cqlsh_host = args.cqlsh_host
 
         if 'columnfamily' in args:
             self.keyspace_columnfamily_filter = args.columnfamily
@@ -767,7 +814,7 @@ class Cassandra(object):
             f = open(self.config_file, 'r')
             cassandra_configfile = f.read()
             f.close()
-            self.config = yaml.load(cassandra_configfile)
+            self.config = yaml.load(cassandra_configfile, Loader=yaml.FullLoader)
         except Exception as exception:
             logging.critical('Could not load cassandra config file from {0}. Error: {1}'.format(
                 CASSANDRA_CONFIG_FILE, str(exception)))
@@ -794,6 +841,10 @@ class Cassandra(object):
                 datacenter = line.split('Datacenter: ')[1]
                 self.cluster_data[datacenter] = {}
             else:
+                # TODO: When a node is down the load quantity is "?" and load units is missing.
+                if '?' in line:
+                    line = line.replace('?', '? ?')
+
                 status_state, address, load_qty, load_units, tokens, owns, host_id, rack = line.split()
                 status = status_state[0]
                 self.cluster_data[datacenter][host_id] = {
@@ -824,6 +875,7 @@ class Cassandra(object):
         :rtype: dict
         :return: Dictionary of keyspace: [column families]
         """
+        # TODO: nodetool cfstats is replaced with nodetool tablestats in 2.2. cfstats exists as a deprecated reference.
         cmd = ['nodetool', 'cfstats']
         # TODO: Fix this. Cannot filter here because it breaks status command.
         # if self.keyspace_columnfamily_filter is not None:
@@ -832,9 +884,16 @@ class Cassandra(object):
         return_code, out, error = run_command(cmd, execute_during_dry_run=True)
         # Build a dictionary of keyspace: [column families]
         keyspace = None
+
+        line_start = 'Keyspace: '
+        version = get_version()
+        if version[0] == '3' and version[1] != '0':
+            line_start = 'Keyspace : '
+
         for line in out.split("\n"):
-            if line.startswith('Keyspace: '):
-                keyspace = line.split('Keyspace: ')[1]
+            if line.startswith(line_start):
+                keyspace = line.split(line_start)[1]
+
                 self.keyspace_schema_data[keyspace] = self.__enumerate_keyspace_replication(keyspace)
                 self.keyspace_schema_data[keyspace]['tables'] = []
             elif line.startswith("\t\tTable: "):
@@ -853,10 +912,9 @@ class Cassandra(object):
             '-e',
             'DESCRIBE KEYSPACE {0}'.format(keyspace),
         ]
-        if args.cqlsh_host:
-            cmd.append(args.cqlsh_host)
-        if args.cqlsh_ssl:
-            cmd.append('--ssl')
+
+        append_cqlsh_args(cmd, args)
+
         return_code, out, error = run_command(cmd, execute_during_dry_run=True)
         for line in out.split("\n"):
             if not line.startswith('CREATE KEYSPACE '):
@@ -884,16 +942,22 @@ class Cassandra(object):
         :rtype: dict
         :return: dictionary of columnfamily id mapping for columnfamilies in keyspaces.
         """
-        cmd = [
-            'cqlsh',
-            '-e',
-            'SELECT JSON keyspace_name, columnfamily_name, cf_id FROM system.schema_columnfamilies'
-        ]
+        version = get_version()
 
-        if args.cqlsh_host:
-            cmd.append(args.cqlsh_host)
-        if args.cqlsh_ssl:
-            cmd.append('--ssl')
+        if version[0] == '2':
+            cmd = [
+                'cqlsh',
+                '-e',
+                'SELECT JSON keyspace_name, columnfamily_name, cf_id FROM system.schema_columnfamilies'
+            ]
+        elif version[0] == '3':
+            cmd = [
+                'cqlsh',
+                '-e',
+                'SELECT JSON keyspace_name, table_name as columnfamily_name, id as cf_id FROM system_schema.tables'
+            ]
+
+        append_cqlsh_args(cmd, args)
 
         _, out, _ = run_command(cmd)
 
@@ -970,6 +1034,9 @@ class Cassandra(object):
             if isinstance(incremental_file, str):
                 # Don't delete the /backups/ directory as sstables may have been written during the upload operation.
                 if incremental_file.endswith('/backups'):
+                    continue
+                # Don't delete the index files directory.
+                if incremental_file.endswith('_idx/'):
                     continue
                 path = os.path.join(data_file_directory, incremental_file)
                 logging.info('Removing incremental path: {0}'.format(path))
@@ -1269,6 +1336,10 @@ class ManifestManager(object):
 
         logging.info('Updating incremental file list manifests...')
         for dir in incremental_files:
+            # Skip adding index files to the manifest.
+            if '/.' in dir and dir.endswith('_idx'):
+                continue
+
             dir_split = dir.split('/')
             keyspace = dir_split[0]
             columnfamily = '-'.join(dir_split[1].split('-')[0:-1])
@@ -1694,13 +1765,13 @@ class IncrementalStatus(object):
             generation = 0
 
         pre = len(remote_incrementals)
-        remote_incrementals = filter(lambda n: n.split('-')[1] >= generation, remote_incrementals)
+        remote_incrementals = filter(lambda n: (n[0] != '.' and n.split('-')[1] >= generation), remote_incrementals)
         post = len(remote_incrementals)
         logging.info('BackupStatus: Reduced list size from {0} to {1}: {2} less.'.format(pre, post, pre - post))
 
         # Separate list of remote incrementals into individual lists by file.
         suffixes = ['big-CompressionInfo.db', 'big-Data.db', 'big-Digest.adler32', 'big-Filter.db', 'big-Index.db',
-                    'big-Statistics.db', 'big-Summary.db', 'big-TOC.txt']
+                    'big-Statistics.db', 'big-Summary.db', 'big-TOC.txt', 'big-Digest.crc32']
         suffix_remote_incrementals = {}
         for suffix in suffixes:
             suffix_remote_incrementals[suffix] = set([ri for ri in remote_incrementals if ri.endswith(suffix)])
@@ -1831,6 +1902,13 @@ class BackupManager(object):
             # Find each <ks>/<cf>/backups/<sstable>
             if root.endswith('/backups'):
                 root = root[len(data_file_directory):]
+                for file in files:
+                    if root not in incremental_files.keys():
+                        incremental_files[root] = []
+                    filename = os.path.join(root, file)
+                    incremental_files[root].append(filename)
+            if '/backups' in root and '/.' in root and root.endswith('_idx'):
+                root = root[len(data_file_directory):] + '/'
                 for file in files:
                     if root not in incremental_files.keys():
                         incremental_files[root] = []
@@ -2032,7 +2110,11 @@ class BackupManager(object):
                             if not os.path.exists(os.path.dirname(restore_path)):
                                 os.makedirs(os.path.dirname(restore_path))
 
-                            os.rename(downloaded_path, restore_path)
+                            if os.path.exists(downloaded_path):
+                                os.rename(downloaded_path, restore_path)
+                            else:
+                                logging.warning('Incremental file in manifest does not exist: {0}.'.format(
+                                    downloaded_path))
 
             if username is None and password is None:
                 try:
@@ -2079,6 +2161,10 @@ if __name__ == '__main__':
                                      help='Sets the cqlsh host that will be used to run cqlsh commands')
             repo_parser.add_argument('--cqlsh-ssl', dest='cqlsh_ssl', required=False, default=False, action='store_true',
                                      help='Uses SSL when connecting to CQLSH')
+            repo_parser.add_argument('--cqlsh-user', dest='cqlsh_user', required=False,
+                                     help='Optionally provide username to use when connecting to CQLSH')
+            repo_parser.add_argument('--cqlsh-pass', dest='cqlsh_pass', required=False,
+                                     help='Optionally provide password to use when connecting to CQLSH')
 
             # Debugging
             repo_parser.add_argument('--dry-run', dest='dry_run', action='store_true', default=False,
@@ -2140,6 +2226,10 @@ if __name__ == '__main__':
     try:
         if args.action == 'full':
             backup_manager.full_backup(args.columnfamily)
+            full_status_file = '/tmp/onzra_cassandra_backup_service-full.status'
+            with open(full_status_file, 'a'):
+                os.utime(full_status_file, None)
+            os.chmod(full_status_file, stat.S_IRWXO | stat.S_IRWXG | stat.S_IRWXU)
         elif args.action == 'incremental':
             try:
                 backup_manager.incremental_backup(args.columnfamily, args.thread_limit)
@@ -2161,7 +2251,7 @@ if __name__ == '__main__':
                 exit(10)
 
     except Exception as exception:
-        logging.exception('Exception during action: {0}'.format(action))
+        logging.exception('Exception during action: {0}'.format(args.action))
         raise
 
     if args.action in ('status', 'restore'):
