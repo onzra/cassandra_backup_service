@@ -948,20 +948,20 @@ class Cassandra(object):
             cmd = [
                 'cqlsh',
                 '-e',
-                'SELECT JSON keyspace_name, columnfamily_name, cf_id FROM system.schema_columnfamilies LIMIT 1000000'
+                'PAGING OFF; SELECT JSON keyspace_name, columnfamily_name, cf_id FROM system.schema_columnfamilies LIMIT 1000000'
             ]
         elif version[0] == '3':
             cmd = [
                 'cqlsh',
                 '-e',
-                'SELECT JSON keyspace_name, table_name as columnfamily_name, id as cf_id FROM system_schema.tables LIMIT 1000000'
+                'PAGING OFF; SELECT JSON keyspace_name, table_name as columnfamily_name, id as cf_id FROM system_schema.tables LIMIT 1000000'
             ]
 
         append_cqlsh_args(cmd, args)
 
         _, out, _ = run_command(cmd)
 
-        rows = [json.loads(r.strip()) for r in out.split('\n')[3:-3]]
+        rows = [json.loads(r.strip()) for r in out.split('\n')[4:-3]]
         cf_id_map = {}
         for row in rows:
             keyspace = row['keyspace_name']
