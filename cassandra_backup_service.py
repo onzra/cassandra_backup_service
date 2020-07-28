@@ -948,13 +948,13 @@ class Cassandra(object):
             cmd = [
                 'cqlsh',
                 '-e',
-                'SELECT JSON keyspace_name, columnfamily_name, cf_id FROM system.schema_columnfamilies'
+                'SELECT JSON keyspace_name, columnfamily_name, cf_id FROM system.schema_columnfamilies LIMIT 1000000'
             ]
         elif version[0] == '3':
             cmd = [
                 'cqlsh',
                 '-e',
-                'SELECT JSON keyspace_name, table_name as columnfamily_name, id as cf_id FROM system_schema.tables'
+                'SELECT JSON keyspace_name, table_name as columnfamily_name, id as cf_id FROM system_schema.tables LIMIT 1000000'
             ]
 
         append_cqlsh_args(cmd, args)
