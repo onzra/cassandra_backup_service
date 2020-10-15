@@ -1884,9 +1884,10 @@ class BackupManager(object):
                                                  snapshot_name, thread_limit)
             except Exception as exception:
                 logging.warning('Exception when uploading during full_backup: {0}'.format(exception))
+                raise exception
+            finally:
                 logging.info('Clearing snapshot {0} data'.format(snapshot_name))
                 self.cassandra.nodetool_clearsnapshot(snapshot_name)
-                raise exception
 
         logging.info('Finished snapshot after {0} seconds.'.format(int(time.time() - snapshot_start)))
 
