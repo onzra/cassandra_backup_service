@@ -438,7 +438,7 @@ class AWSBackupRepo(BaseBackupRepo):
 
             for path in glob.glob('{0}/*/*/snapshots/{1}/'.format(data_file_directory, snapshot_name)):
                 remote_path = '{0}/{1}'.format(bucket, path.replace(data_file_directory, ''))
-                cmd = ['aws', 's3', 'cp', '--recursive', path, remote_path]
+                cmd = ['aws', 's3', 'cp', '--recursive', '--storage-class', 'STANDARD_IA', path, remote_path]
                 if self.s3_sse:
                     cmd.append('--sse')
 
@@ -479,10 +479,10 @@ class AWSBackupRepo(BaseBackupRepo):
             local_path = '{0}{1}'.format(data_file_directory, filepath)
             remote_path = '{0}/{1}'.format(bucket, filepath)
             if local_path.endswith('/'):
-                cmd = ['aws', 's3', 'cp', '--recursive', local_path, remote_path]
+                cmd = ['aws', 's3', 'cp', '--storage-class', 'STANDARD_IA', '--recursive', local_path, remote_path]
                 cmd.extend(['--exclude', '{0}/.*'.format(local_path)])
             else:
-                cmd = ['aws', 's3', 'cp', local_path, remote_path]
+                cmd = ['aws', 's3', 'cp', '--storage-class', 'STANDARD_IA', local_path, remote_path]
                 cmd.extend(['--exclude', '{0}/.*'.format(local_path)])
         else:
             if columnfamily:
