@@ -1876,15 +1876,19 @@ class BackupManager(object):
         self.cassandra.nodetool_snapshot(snapshot_name, columnfamily)
 
         if self.backup_repo:
-            self.manifest_manager.download_manifests(self.cassandra.host_id)
-            self.manifest_manager.update_snapshot_manifests(snapshot_name, columnfamily)
-            self.manifest_manager.upload_manifests(self.cassandra.host_id)
+            try:
+                self.manifest_manager.download_manifests(self.cassandra.host_id)
+                self.manifest_manager.update_snapshot_manifests(snapshot_name, columnfamily)
+                self.manifest_manager.upload_manifests(self.cassandra.host_id)
 
-            self.backup_repo.upload_snapshot(self.cassandra.host_id, self.cassandra.data_file_directories,
-                                             snapshot_name, thread_limit)
-
-            logging.info('Clearing snapshot {0} data'.format(snapshot_name))
-            self.cassandra.nodetool_clearsnapshot(snapshot_name)
+                self.backup_repo.upload_snapshot(self.cassandra.host_id, self.cassandra.data_file_directories,
+                                                 snapshot_name, thread_limit)
+            except Exception as exception:
+                logging.warning('Exception when uploading during full_backup: {0}'.format(exception))
+                raise exception
+            finally:
+                logging.info('Clearing snapshot {0} data'.format(snapshot_name))
+                self.cassandra.nodetool_clearsnapshot(snapshot_name)
 
         logging.info('Finished snapshot after {0} seconds.'.format(int(time.time() - snapshot_start)))
 
