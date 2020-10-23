@@ -18,14 +18,19 @@ __email__ = "javila@onzra.com"
 
 import abc
 import argparse
+import ConfigParser
 import fcntl
 import glob
 import json
 import logging
 import os
+import shutil
 import socket
+import stat
 import subprocess
 import sys
+import tempfile
+import threading
 import time
 import yaml
 
@@ -35,6 +40,37 @@ logger.setLevel(logging.INFO)
 CASSANDRA_CONFIG_FILE = '/etc/cassandra/conf/cassandra.yaml'
 DRY_RUN = False
 TIME_FORMAT = '%Y-%m-%d %H:%M:%S'
+RESTORE_DIR_FILELOCK = None
+
+
+def glob_optimize_backup_paths(backup_paths):
+    """
+    Optimize a list of backup file paths to use a wildcard * character.
+
+    Example of input:
+        /tmp/ks/cf/backups/lb-1-big-Index.db
+        /tmp/ks/cf/backups/lb-2-big-Summary.db
+        /tmp/ks2/cf2/backups/lb-3-big-Index.db
+        /tmp/ks2/cf2/backups/lb-3-big-Summary.db
+    Output:
+        /tmp/ks/cf/backups/lb-1-*
+        /tmp/ks/cf/backups/lb-2-*
+        /tmp/ks2/cf2/backups/lb-3-*
+
+    :param list[str] backup_paths: list of file paths.
+
+    :rtype: list[str]
+    :return: reduced list of paths with wildcard * character replacements.
+    """
+    output = []
+    for backup_path in backup_paths:
+        base_path = '{0}/backups/'.format(backup_path.split('/backups/')[0])
+        wildcard_path = '{0}{1}-*'.format(base_path, '-'.join(backup_path.split('/backups/')[1].split('-')[0:2]))
+        output.append(wildcard_path)
+
+    output = list(set(output))
+
+    return output
 
 
 def filter_keyspaces(keyspaces, columnfamily):
@@ -101,14 +137,19 @@ class FileLockedError(Exception):
     pass
 
 
-def filelocked(lockfile_path):
+def filelocked(lockfile_path_or_lambda):
     """
     Decorator for a class method to check if provided lockfile_path should stop execution of decorated function.
 
-    :param str lockfile_path: path to lock file.
+    :param str lockfile_path_or_lambda: path to lock file or lambda which returns path.
     """
     def real_decorator(function):
         def wrapper(self, *args, **kwargs):
+            if isinstance(lockfile_path_or_lambda, type(lambda: None)):
+                lockfile_path = lockfile_path_or_lambda()
+            else:
+                lockfile_path = lockfile_path_or_lambda
+
             with open(lockfile_path, 'w') as f:
                 try:
                     fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -136,11 +177,18 @@ def run_command(cmd, execute_during_dry_run=False):
     :return: (return code, stdout, stderr)
     """
     global DRY_RUN
+
+    sanitized_cmd = list(cmd)
+    if 'cqlsh' in cmd and '-p' in cmd:
+        pindex = cmd.index('-p')
+        sanitized_cmd[pindex + 1] = '********'
+
     if DRY_RUN:
-        logging.info('$ {0}'.format(' '.join(cmd)))
+        logging.info('$ {0}'.format(' '.join(sanitized_cmd)))
         if not execute_during_dry_run:
             return 0, '', ''
 
+    logging.debug('Run command: {0}'.format(sanitized_cmd))
     p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     out, err = p.communicate()
 
@@ -151,8 +199,8 @@ def run_command(cmd, execute_during_dry_run=False):
         if p.returncode == 2 and (cmd[0] == 'aws' and cmd[1] == 's3' and cmd[2] in ('sync', 'cp')):
             logger.warn('Command {0} exited with code {1}. STDERR: "{2}"'.format(' '.join(cmd), p.returncode, err))
         else:
-            raise Exception('Command {0} exited with code {1}. STDERR: "{2}"'.format(' '.join(cmd), p.returncode, err))
-    logging.debug('Run command: {0}'.format(cmd))
+            raise Exception('Command {0} exited with code {1}. STDERR: "{2}"'.format(
+                ' '.join(sanitized_cmd), p.returncode, err))
     logging.debug('Return code: {0}'.format(p.returncode))
     if out:
         if '\n' in out.strip():
@@ -164,32 +212,71 @@ def run_command(cmd, execute_during_dry_run=False):
     return p.returncode, out, err
 
 
+def get_version():
+    """
+    Get Cassandra version through CQLSH.
+
+    :rtype: (str, str, str)
+    :return: major, minor, patch.
+    """
+    cmd = ['cqlsh', '-e', 'SHOW VERSION',]
+    append_cqlsh_args(cmd, args)
+
+    return_code, out, error = run_command(cmd, execute_during_dry_run=True)
+    major, minor, patch = out.split('|')[1].strip().split(' ')[1].split('.')
+    return major, minor, patch
+
+
+def append_cqlsh_args(cmd, args):
+    """
+    Update arguments list for CQLSH command.
+
+    :param list cmd: command arguments list to update.
+    :param dict args: ArgParser dict.
+    """
+    if args.cqlsh_host:
+        cmd.append(args.cqlsh_host)
+    if args.cqlsh_ssl:
+        cmd.append('--ssl')
+    if args.cqlsh_user:
+        cmd.append('-u')
+        cmd.append(args.cqlsh_user)
+    if args.cqlsh_user:
+        cmd.append('-p')
+        cmd.append(args.cqlsh_pass)
+
+
 class BaseBackupRepo(object):
     """
     Base backup repository class.
     """
     args = None
+    store_md5sum = False
 
-    def __init__(self, meta_path):
+    def __init__(self, meta_path, store_md5sum=False):
         """
         Init.
 
         :param str meta_path: meta path.
+        :param bool store_md5sum: optionally instruct backup repository to store MD5 checksum for stored files.
         """
         self.meta_path = meta_path
+        self.store_md5sum = store_md5sum
 
     @abc.abstractmethod
-    def download_manifests(self, host_id):
+    def download_manifests(self, host_id, columnfamily):
         """
-        Download all host manifests for provided host id from remote storage.
+        Download all host manifests for provided host id from remote storage. Optionally only download manifests for
+        provided columnfamily.
         """
         pass
 
     @abc.abstractmethod
-    def upload_manifests(self, manifest_files=None):
+    def upload_manifests(self, host_id, ks_cf=None, manifest_files=None):
         """
         Upload all host manifests for provided host id to remote storage. Optionally provide list of paths to upload.
 
+        :param str host_id: host id.
         :param list[str] manifest_files: if this optional argument is None, upload all manifests for the keyspaces and
         columnfamilies in this host. If the list contains paths, this function will only upload the provided paths.
         """
@@ -207,7 +294,7 @@ class BaseBackupRepo(object):
         pass
 
     @abc.abstractmethod
-    def upload_incremental_backups(self, host_id, data_file_directory, incremental_directories):
+    def upload_incremental_backups(self, host_id, data_file_directory, filepath, incremental_directories):
         """
         Upload incremental backups to S3 for all incremental_directories in provided provided data_file_directory.
 
@@ -292,7 +379,7 @@ class BaseBackupRepo(object):
         pass
 
     @abc.abstractmethod
-    def download_files(self, remote_files, local_path):
+    def sync_files(self, remote_files, local_path):
         """
         Download provided list of remote_files from remote storage to provided local_path.
 
@@ -335,7 +422,7 @@ class AWSBackupRepo(BaseBackupRepo):
         self.s3_bucket = s3_bucket
         self.s3_sse = s3_ss3
 
-    def upload_snapshot(self, host_id, data_file_directories, snapshot_name):
+    def upload_snapshot(self, host_id, data_file_directories, snapshot_name, thread_limit=4):
         """
         Upload snapshot to remote storage by iterating through provided list of data_file_directories.
 
@@ -343,24 +430,35 @@ class AWSBackupRepo(BaseBackupRepo):
         :param list[str] data_file_directories: list of data file directories.
         :param str snapshot_name: name of snapshot.
         """
+        commands_to_run = []
         for data_file_directory in data_file_directories:
-            cmd = ['aws', 's3', 'sync', data_file_directory]
             bucket = '{0}/{1}'.format(self.s3_bucket, host_id)
 
             logging.info('Uploading full backup {0} dir to bucket: {1}'.format(data_file_directory, bucket))
 
-            cmd.append(bucket)
-            cmd.extend(['--exclude', '*'])
-            cmd.extend(['--include', '*/*/snapshots/{0}/*'.format(snapshot_name)])
-            cmd.extend(['--exclude', '*/*/snapshots/{0}/manifest.json'.format(snapshot_name)])
+            for path in glob.glob('{0}/*/*/snapshots/{1}/'.format(data_file_directory, snapshot_name)):
+                remote_path = '{0}/{1}'.format(bucket, path.replace(data_file_directory, ''))
+                cmd = ['aws', 's3', 'cp', '--recursive', '--storage-class', 'STANDARD_IA', path, remote_path]
+                if self.s3_sse:
+                    cmd.append('--sse')
 
-            if self.s3_sse:
-                cmd.append('--sse')
+                commands_to_run.append(cmd)
 
-            # TODO: error detection
-            run_command(cmd)
+        logging.info('Preparing to upload {0} files using {1} threads.'.format(len(commands_to_run), thread_limit))
+        for ti in range(0, len(commands_to_run), thread_limit):
+            commands_to_run_subset = commands_to_run[ti:ti + thread_limit]
 
-    def upload_incremental_backups(self, host_id, data_file_directory, incremental_directories):
+            logging.info('Starting {0} threads.'.format(len(commands_to_run_subset)))
+            upload_threads = []
+            for command_to_run in commands_to_run_subset:
+                upload_thread = threading.Thread(target=run_command, args=(command_to_run,))
+                upload_threads.append(upload_thread)
+                upload_thread.start()
+
+            for upload_thread in upload_threads:
+                upload_thread.join()
+
+    def upload_incremental_backups(self, host_id, data_file_directory, filepath=None, columnfamily=None):
         """
         Upload incremental backups to S3 for all incremental_directories in provided provided data_file_directory.
 
@@ -370,59 +468,96 @@ class AWSBackupRepo(BaseBackupRepo):
         """
         cmd = ['aws', 's3', 'sync', data_file_directory]
         bucket = '{0}/{1}'.format(self.s3_bucket, host_id)
-        logging.info('Uploading incremental backup to bucket: {0}'.format(bucket))
+        if filepath:
+            logging.info('Uploading incremental backup {0} to bucket: {1}'.format(filepath, bucket))
+        else:
+            logging.info('Uploading incremental backup to bucket: {0}'.format(bucket))
         cmd.append(bucket)
         cmd.extend(['--exclude', '*'])
         #  Upload all column families backups
-        for incremental_directory in incremental_directories:
-            cmd.extend(['--include', '{0}/*'.format(incremental_directory)])
-            cmd.extend(['--exclude', '{0}/manifest.json'.format(incremental_directory)])
+        if filepath:
+            local_path = '{0}{1}'.format(data_file_directory, filepath)
+            remote_path = '{0}/{1}'.format(bucket, filepath)
+            if local_path.endswith('/'):
+                cmd = ['aws', 's3', 'cp', '--storage-class', 'STANDARD_IA', '--recursive', local_path, remote_path]
+                cmd.extend(['--exclude', '{0}/.*'.format(local_path)])
+            else:
+                cmd = ['aws', 's3', 'cp', '--storage-class', 'STANDARD_IA', local_path, remote_path]
+                cmd.extend(['--exclude', '{0}/.*'.format(local_path)])
+        else:
+            if columnfamily:
+                ks, cf = columnfamily.split('.')
+                cmd.extend(['--include', '{0}{1}/{2}*/backups/*'.format(data_file_directory, ks, cf)])
+                cmd.extend(['--exclude', '{0}{1}/{2}*/backups/*/.*'.format(data_file_directory, ks, cf)])
+            else:
+                cmd.extend(['--include', '{0}*/*/backups/*'.format(data_file_directory)])
+                cmd.extend(['--exclude', '{0}*/*/backups/*/.*'.format(data_file_directory)])
 
         if self.s3_sse:
             cmd.append('--sse')
 
         run_command(cmd)
 
-    def download_manifests(self, host_id):
+    def download_manifests(self, host_id, columnfamily=None):
         """
-        Download all manifest files from remotes storage.
+        Download all host manifests for provided host id from remote storage. Optionally only download manifests for
+        provided columnfamily.
 
         :param str host_id: host id.
+        :param str columnfamily: optional columnfamily specification.
         """
         local_path = '{0}/'.format(self.meta_path)
         s3_path = '{0}/{1}'.format(self.s3_bucket, host_id)
 
-        logging.info('Downloading manifest files to: {0}'.format(local_path))
+        if not columnfamily:
+            logging.info('Downloading manifest files to: {0}'.format(local_path))
+        else:
+            logging.info('Downloading manifest files for {cf} to: {lp}'.format(cf=columnfamily, lp=local_path))
 
         cmd = []
-        cmd.extend(['aws', 's3', 'sync', s3_path, local_path])
-        cmd.extend(['--exclude', '*', '--include', '*/*/meta/manifest.json'])
+        if columnfamily is not None:
+            ks, cf = columnfamily.split('.')
+            manifest = '{0}/{1}/meta/manifest.json'.format(ks, cf)
+            s3_path = '{0}/{1}'.format(s3_path, manifest)
+            local_path = '{0}/{1}'.format(local_path, manifest)
+            cmd.extend(['aws', 's3', 'cp', s3_path, local_path])
+        else:
+            cmd.extend(['aws', 's3', 'cp', '--recursive', s3_path, local_path])
+            cmd.extend(['--exclude', '*', '--include', '*/*/meta/manifest.json'])
 
         if self.s3_sse:
             cmd.append('--sse')
 
         run_command(cmd)
 
-    def upload_manifests(self, host_id, manifest_files=None):
+    def upload_manifests(self, host_id, columnfamily=None, manifest_files=None):
         """
         Upload all host manifests to remote storage. Optionally provide list of paths to upload.
 
+        :param str host_id: host id.
         :param list[str] manifest_files: if this optional argument is None, upload all manifests for the keyspaces and
         columnfamilies in this host. If the list contains paths, this function will only upload the provided paths.
         """
         local_path = '{0}/'.format(self.meta_path)
         s3_path = '{0}/{1}'.format(self.s3_bucket, host_id)
 
-        logging.info('Uploading manifest files to Amazon S3: {0}'.format(s3_path))
+        if not columnfamily:
+            logging.info('Uploading manifest files to: {0}'.format(local_path))
+        else:
+            logging.info('Uploading manifest files for {cf} to: {lp}'.format(cf=columnfamily, lp=local_path))
 
         cmd = []
-        cmd.extend(['aws', 's3', 'sync', local_path, s3_path])
-        if manifest_files is None:
-            cmd.extend(['--exclude', '*', '--include', '*/*/meta/manifest.json'])
+
+        if columnfamily is not None:
+            ks, cf = columnfamily.split('.')
+            manifest = '{0}/{1}/meta/manifest.json'.format(ks, cf)
+            s3_path = '{0}/{1}'.format(s3_path, manifest)
+            local_path = '{0}/{1}'.format(local_path, manifest)
+            cmd.extend(['aws', 's3', 'cp', local_path, s3_path])
         else:
-            cmd.extend(['--exclude', '*'])
-            for manifest_file_path in manifest_files:
-                cmd.extend(['--include', manifest_file_path])
+            cmd.extend(['aws', 's3', 'cp', '--recursive', local_path, s3_path])
+            cmd.extend(['--exclude', '*', '--include', '*/*/meta/manifest.json'])
+
 
         if self.s3_sse:
             cmd.append('--sse')
@@ -485,7 +620,7 @@ class AWSBackupRepo(BaseBackupRepo):
         filename = '{0}_{1}.json'.format(host_id, timestamp)
 
         remote_path = '{0}/meta/{1}'.format(self.s3_bucket, filename)
-        local_path = '{mp}{fn}'.format(mp=self.meta_path, fn=filename)
+        local_path = '{mp}/{fn}'.format(mp=self.meta_path, fn=filename)
 
         cmd = ['aws', 's3', 'cp', remote_path, local_path]
         run_command(cmd)
@@ -533,14 +668,19 @@ class AWSBackupRepo(BaseBackupRepo):
 
         return [f.split(' ')[-1] for f in out.strip().split('\n')]
 
-    def download_files(self, remote_files, local_path):
+    def sync_files(self, remote_files, local_path, base_path=None):
         """
         Download provided list of remote_files from remote storage to provided local_path.
 
         :param list[str] remote_files: list of full paths to remote files.
         :param str local_path: local path where to store downloaded files.
         """
-        cmd = ['aws', 's3', 'sync', self.s3_bucket, local_path]
+        if base_path is None:
+            cmd = ['aws', 's3', 'cp', '--recursive', self.s3_bucket, local_path]
+        else:
+            base_path = '{0}/{1}'.format(self.s3_bucket, base_path)
+            cmd = ['aws', 's3', 'cp', '--recursive', base_path, local_path]
+
         # logging.info('Downloading {0} files from {1} to {2}.'.format(len(remote_files), self.s3_bucket, local_path))
         cmd.extend(['--exclude', '*'])
         #  Upload all column families backups
@@ -551,15 +691,33 @@ class AWSBackupRepo(BaseBackupRepo):
 
         run_command(cmd)
 
+    def download_files(self, remote_path, local_path):
+        """
+        Recursively download a directory from remote storage to provided local_path.
+
+        :param str remote_path: list of full paths to remote files.
+        :param str local_path: local path where to store downloaded files.
+        """
+        remote_path = '{0}/{1}'.format(self.s3_bucket, remote_path)
+
+        if '*' in remote_path:
+            cmd = ['aws', 's3', 'cp', '--recursive', '/'.join(remote_path.split('/')[0:-1])+'/', local_path]
+            cmd.extend(['--exclude', '*'])
+            include_path = remote_path.split('/')[-1]
+            cmd.extend(['--include', include_path])
+        else:
+            cmd = ['aws', 's3', 'cp', '--recursive', remote_path, local_path]
+
+        if self.s3_sse:
+            cmd.append('--sse')
+
+        run_command(cmd)
+
 
 class Cassandra(object):
     """
-    The purpose of this class is to discover information about the host and
-    cluster through nodetool commands, cqlsh describe schema commands, and the
-    cassandra config file.
-    TODO: FIX
-    It also supports telling the node to do a snapshot or an incremental backup, will then interface with a
-    `BackupRepo` and also manage the removal of local files.
+    The purpose of this class is to discover information about the host and cluster through nodetool commands, cqlsh
+    describe schema commands, and the cassandra config file.
     """
     cqlsh_host = None
     config_file = None
@@ -627,19 +785,21 @@ class Cassandra(object):
         :param Namespace args: args.
         """
         self.config_file = args.cassandra_config
-        self.cqlsh_host = args.cqlsh_host
+        # TODO: This isn't used?
+        # self.cqlsh_host = args.cqlsh_host
 
         if 'columnfamily' in args:
             self.keyspace_columnfamily_filter = args.columnfamily
 
-        self.set_meta_path()
+        self.set_meta_path(args.meta_path)
 
-    def set_meta_path(self):
+    def set_meta_path(self, meta_path):
         """
         Set the path where meta files for backup services will be stored. The path selected is based off of the first
         Cassandra data file directory setting.
+
+        :param str meta_path: path for which to store meta data json files.
         """
-        meta_path = '{0}/meta'.format(os.path.dirname(self.data_file_directories[0]))
         logging.debug('Setting meta path: {0}'.format(meta_path))
         if not os.path.exists(meta_path):
             os.makedirs(meta_path)
@@ -654,7 +814,7 @@ class Cassandra(object):
             f = open(self.config_file, 'r')
             cassandra_configfile = f.read()
             f.close()
-            self.config = yaml.load(cassandra_configfile)
+            self.config = yaml.load(cassandra_configfile, Loader=yaml.FullLoader)
         except Exception as exception:
             logging.critical('Could not load cassandra config file from {0}. Error: {1}'.format(
                 CASSANDRA_CONFIG_FILE, str(exception)))
@@ -681,6 +841,11 @@ class Cassandra(object):
                 datacenter = line.split('Datacenter: ')[1]
                 self.cluster_data[datacenter] = {}
             else:
+                # TODO: When a node is down the load quantity is "?" and load units is missing.
+                version = get_version()
+                if '?' in line and version[0] == '2':
+                    line = line.replace('?', '? ?')
+
                 status_state, address, load_qty, load_units, tokens, owns, host_id, rack = line.split()
                 status = status_state[0]
                 self.cluster_data[datacenter][host_id] = {
@@ -711,6 +876,7 @@ class Cassandra(object):
         :rtype: dict
         :return: Dictionary of keyspace: [column families]
         """
+        # TODO: nodetool cfstats is replaced with nodetool tablestats in 2.2. cfstats exists as a deprecated reference.
         cmd = ['nodetool', 'cfstats']
         # TODO: Fix this. Cannot filter here because it breaks status command.
         # if self.keyspace_columnfamily_filter is not None:
@@ -719,9 +885,16 @@ class Cassandra(object):
         return_code, out, error = run_command(cmd, execute_during_dry_run=True)
         # Build a dictionary of keyspace: [column families]
         keyspace = None
+
+        line_start = 'Keyspace: '
+        version = get_version()
+        if version[0] == '3' and version[1] != '0':
+            line_start = 'Keyspace : '
+
         for line in out.split("\n"):
-            if line.startswith('Keyspace: '):
-                keyspace = line.split('Keyspace: ')[1]
+            if line.startswith(line_start):
+                keyspace = line.split(line_start)[1]
+
                 self.keyspace_schema_data[keyspace] = self.__enumerate_keyspace_replication(keyspace)
                 self.keyspace_schema_data[keyspace]['tables'] = []
             elif line.startswith("\t\tTable: "):
@@ -730,7 +903,7 @@ class Cassandra(object):
 
     def __enumerate_keyspace_replication(self, keyspace):
         """
-        Get a dictionary of options for the keyspace from cqlsh
+        Get a dictionary of options for the keyspace from cqlsh.
 
         :rtype: dict
         :return: Dictionary of replication options for the keyspace
@@ -740,8 +913,9 @@ class Cassandra(object):
             '-e',
             'DESCRIBE KEYSPACE {0}'.format(keyspace),
         ]
-        if args.cqlsh_host:
-            cmd.append(args.cqlsh_host)
+
+        append_cqlsh_args(cmd, args)
+
         return_code, out, error = run_command(cmd, execute_during_dry_run=True)
         for line in out.split("\n"):
             if not line.startswith('CREATE KEYSPACE '):
@@ -769,18 +943,26 @@ class Cassandra(object):
         :rtype: dict
         :return: dictionary of columnfamily id mapping for columnfamilies in keyspaces.
         """
-        cmd = [
-            'cqlsh',
-            '-e',
-            'SELECT JSON keyspace_name, columnfamily_name, cf_id FROM system.schema_columnfamilies'
-        ]
+        version = get_version()
 
-        if args.cqlsh_host:
-            cmd.append(args.cqlsh_host)
+        if version[0] == '2':
+            cmd = [
+                'cqlsh',
+                '-e',
+                'PAGING OFF; SELECT JSON keyspace_name, columnfamily_name, cf_id FROM system.schema_columnfamilies LIMIT 1000000'
+            ]
+        elif version[0] == '3':
+            cmd = [
+                'cqlsh',
+                '-e',
+                'PAGING OFF; SELECT JSON keyspace_name, table_name as columnfamily_name, id as cf_id FROM system_schema.tables LIMIT 1000000'
+            ]
+
+        append_cqlsh_args(cmd, args)
 
         _, out, _ = run_command(cmd)
 
-        rows = [json.loads(r.strip()) for r in out.split('\n')[3:-3]]
+        rows = [json.loads(r.strip()) for r in out.split('\n')[4:-3]]
         cf_id_map = {}
         for row in rows:
             keyspace = row['keyspace_name']
@@ -851,9 +1033,15 @@ class Cassandra(object):
         """
         for incremental_file in incremental_files:
             if isinstance(incremental_file, str):
+                # Don't delete the /backups/ directory as sstables may have been written during the upload operation.
+                if incremental_file.endswith('/backups'):
+                    continue
+                # Don't delete the index files directory.
+                if incremental_file.endswith('_idx/'):
+                    continue
                 path = os.path.join(data_file_directory, incremental_file)
-                # TODO: Replace with os.remove(path)
-                run_command(['rm', '-rf', path])
+                logging.info('Removing incremental path: {0}'.format(path))
+                os.remove(path)
             else:
                 self.clear_incrementals(data_file_directory, incremental_file)
 
@@ -877,6 +1065,18 @@ class ManifestManager(object):
         self.cassandra = cassandra
         self.meta_path = meta_path
         self.backup_repo = backup_repo
+
+    def get_md5sum(self, path):
+        """
+        Get MD5 checksum string for provided file path.
+
+        :param str path: path to file for which to get MD5 checksum.
+
+        :rtype: str
+        :return: MD5 checksum string.
+        """
+        _, md5sum_result, _ = run_command(['md5sum', path])
+        return md5sum_result.split(' ')[0].strip()
 
     def get_host_list_file_path(self):
         """
@@ -916,7 +1116,16 @@ class ManifestManager(object):
         if os.path.exists(manifest_file_path):
             with open(manifest_file_path, 'r') as manifest_file:
                 logging.info('Using local manifest file {0}'.format(manifest_file_path))
-                manifest = json.load(manifest_file)
+                try:
+                    manifest = json.load(manifest_file)
+                except ValueError as value_error:
+                    logging.warning('Error loading manifest json: {0}'.format(value_error))
+                    logging.warning('Creating new manifest to replace corrupted file - data will be added next backup.')
+                    manifest = {
+                        'keyspace': keyspace,
+                        'column_family': columnfamily,
+                        'created': to_human_readable_time()
+                    }
         else:
             logging.info('Creating new manifest file {0}'.format(manifest_file_path))
             manifest = {
@@ -963,12 +1172,12 @@ class ManifestManager(object):
                         if filename == 'manifest.json':
                             continue
 
-                        _, md5sum_result, _ = run_command(['md5sum', glob_filename])
-
                         snapshot_manifest_data[filename] = {
                             'created': to_human_readable_time(os.path.getmtime(glob_filename)),
-                            'md5sum': md5sum_result.split(' ')[0].strip(),
                         }
+
+                        if self.backup_repo.store_md5sum:
+                            snapshot_manifest_data[filename]['md5sum'] = self.get_md5sum(glob_filename)
 
                 manifest['full'][snapshot_name] = snapshot_manifest_data
                 self.save_manifest(ks, cf, manifest)
@@ -1008,7 +1217,10 @@ class ManifestManager(object):
 
         host_list_file_path = self.save_host_list(data)
         self.backup_repo.upload_host_list(host_list_file_path)
-        os.remove(host_list_file_path)
+        try:
+            os.remove(host_list_file_path)
+        except OSError as os_error:
+            logging.warning('OSError when removing host list file: {0}'.format(os_error))
 
     def get_host_lists(self):
         """
@@ -1020,21 +1232,52 @@ class ManifestManager(object):
         output = {}
         host_lists = self.backup_repo.list_host_lists()
 
-        host_ids = set([hl.split('_')[0] for hl in host_lists])
+        # Identify the latest host list file.
+        latest_timestamp = 0
+        host_id = None
+        for hl in host_lists:
+            host_list_timestamp = from_human_readable_time(
+                '{} {}'.format(hl.split('_')[1], hl.split('_')[2].replace('-', ':')).replace('.json', '')
+            )
+            if host_list_timestamp > latest_timestamp:
+                latest_timestamp = host_list_timestamp
+                host_id = hl.split('_')[0]
 
+        latest_timestamp_filename_string = filename_strip(to_human_readable_time(latest_timestamp))
+        host_list_path = self.backup_repo.download_host_list(host_id, latest_timestamp_filename_string)
+
+        # Download the latest host list file and extract host ids from cluster data.
+        host_ids = []
+        with open(host_list_path, 'r') as host_list_file:
+            host_list_data = json.load(host_list_file)
+
+            for dc in host_list_data['cluster']:
+                host_ids += host_list_data['cluster'][dc].keys()
+
+        host_ids = set(host_ids)
+
+        # Get host data from latest host list for list of latest host ids.
         for host_id in host_ids:
+            logging.debug('Getting latest timestamp for host: {0}'.format(host_id))
+            logging.debug('{0}'.format(host_lists))
             host_lists_for_host_id = [hl for hl in host_lists if host_id in hl]
+            logging.debug('Host lists with {0} entries filtered to {1} entries.'.format(len(host_lists),
+                                                                                        len(host_lists_for_host_id)))
             host_list_timestamps = [
                 from_human_readable_time(
                     '{} {}'.format(hl.split('_')[1], hl.split('_')[2].replace('-', ':')).replace('.json', '')
                 ) for hl in host_lists_for_host_id
             ]
-            latest_timestamp = max(host_list_timestamps)
-            latest_timestamp_filename_string = filename_strip(to_human_readable_time(latest_timestamp))
-            host_list_path = self.backup_repo.download_host_list(host_id, latest_timestamp_filename_string)
-            with open(host_list_path, 'r') as host_list_file:
-                host_list_data = json.load(host_list_file)
-            output[host_id] = host_list_data
+            try:
+                latest_timestamp = max(host_list_timestamps)
+                latest_timestamp_filename_string = filename_strip(to_human_readable_time(latest_timestamp))
+                host_list_path = self.backup_repo.download_host_list(host_id, latest_timestamp_filename_string)
+                with open(host_list_path, 'r') as host_list_file:
+                    host_list_data = json.load(host_list_file)
+                output[host_id] = host_list_data
+            except ValueError as value_error:
+                if host_id not in output:
+                    output[host_id] = value_error
 
         return output
 
@@ -1056,26 +1299,29 @@ class ManifestManager(object):
         if not os.path.exists(os.path.dirname(manifest_file_path)):
             os.makedirs(os.path.dirname(manifest_file_path))
 
-        with open(manifest_file_path, 'w') as manifest_file:
-            json.dump(manifest, manifest_file)
+        manifest_temp_file_path = '{0}.tmp'.format(manifest_file_path)
+        with open(manifest_temp_file_path, 'w') as manifest_temp_file:
+            json.dump(manifest, manifest_temp_file)
+
+        os.rename(manifest_temp_file_path, manifest_file_path)
 
         return manifest_file_path
 
-    def download_manifests(self, host_id):
+    def download_manifests(self, host_id, columnfamily=None):
         """
         Download all manifest files from remotes storage.
 
         :param str host_id: host id.
         """
-        self.backup_repo.download_manifests(host_id)
+        self.backup_repo.download_manifests(host_id, columnfamily)
 
-    def upload_manifests(self, host_id, manifest_files=None):
+    def upload_manifests(self, host_id, ks_cf=None, manifest_files=None):
         """
         Upload all manifest files to remote storage.
 
         :param list[str] manifest_files: optional list of manifest files to filter for efficiency.
         """
-        self.backup_repo.upload_manifests(host_id, manifest_files)
+        self.backup_repo.upload_manifests(host_id, ks_cf, manifest_files)
 
     def incremental_manifest(self, data_file_directory, incremental_files):
         """
@@ -1091,6 +1337,10 @@ class ManifestManager(object):
 
         logging.info('Updating incremental file list manifests...')
         for dir in incremental_files:
+            # Skip adding index files to the manifest.
+            if '/.' in dir and dir.endswith('_idx'):
+                continue
+
             dir_split = dir.split('/')
             keyspace = dir_split[0]
             columnfamily = '-'.join(dir_split[1].split('-')[0:-1])
@@ -1103,12 +1353,11 @@ class ManifestManager(object):
                 full_path = '{}{}'.format(data_file_directory, path)
                 filename = path.replace(dir, '').strip('/')
 
-                _, md5sum_result, _ = run_command(['md5sum', full_path])
-
                 manifest['incremental'][filename] = {
                     'created': to_human_readable_time(os.path.getmtime(full_path)),
-                    'md5sum': md5sum_result.split(' ')[0].strip(),
                 }
+                if self.backup_repo.store_md5sum:
+                    manifest['incremental'][filename]['md5sum'] = self.get_md5sum(full_path)
 
             manifest_file_updated = self.save_manifest(keyspace, columnfamily, manifest)
             manifests_updated.append(manifest_file_updated)
@@ -1117,7 +1366,20 @@ class ManifestManager(object):
 
 
 class BackupStatus(object):
-    def __init__(self, manifest_manager, backup_repo, restore_time=None):
+    """
+    BackupStatus.
+    """
+
+    def __init__(self, manifest_manager, backup_repo, restore_time=None, columnfamily=None, host_ids=None):
+        """
+        Init.
+
+        :param ManifestManager manifest_manager: manifest manager.
+        :param BaseBackupRepo backup_repo: remote storage object.
+        :param int restore_time: timestamp for latest time which can be used to determine restore status and operations.
+        :param str columnfamily: optional columnfamily specific target.
+        :param list[str] host_ids: optionally filter by list of host ids.
+        """
         self.manifest_manager = manifest_manager
         self.backup_repo = backup_repo
         self.host_statuses = {}
@@ -1128,6 +1390,60 @@ class BackupStatus(object):
             ))
         else:
             self.restore_time = None
+
+        host_lists = self.manifest_manager.get_host_lists()
+
+        # TODO: Update the status function to move back in time to earlier manifests / host lists files.
+        if all([type(host_lists[hl]) is ValueError for hl in host_lists]):
+            logging.warn('Cannot determine latest timestamp for host: {0}'.format(','.join(host_lists.keys())))
+            raise host_lists[host_lists.keys()[0]]
+
+        host_lists = {hl: host_lists[hl] for hl in host_lists if type(host_lists[hl]) is dict}
+
+        if host_ids is not None:
+            host_lists = {hl: host_lists[hl] for hl in host_lists if hl in host_ids}
+
+        logging.info('BackupStatus: Iterating through {0} hosts.'.format(len(host_lists)))
+        for host_id in host_lists:
+            if columnfamily is not None:
+                self.manifest_manager.download_manifests(host_id, columnfamily=columnfamily)
+            else:
+                self.manifest_manager.download_manifests(host_id)
+            host_status = self.add_host_status(host_id)
+
+            keyspaces = host_lists[host_id]['keyspaces']
+            if columnfamily is not None:
+                keyspaces = filter_keyspaces(keyspaces, columnfamily)
+
+            if columnfamily is not None:
+                keyspaces = filter_keyspaces(keyspaces, columnfamily)
+
+            logging.info('BackupStatus: Creating keyspace status containers for {0} keyspaces.'.format(len(keyspaces)))
+            threads = {}
+            for keyspace in keyspaces:
+                threads[keyspace] = threading.Thread(target=host_status.add_keyspace_status, args=(keyspace,))
+                threads[keyspace].start()
+
+            for i in threads:
+                threads[i].join()
+            logging.info('BackupStatus: Keyspace containers complete.')
+
+            threads = {}
+            for keyspace in keyspaces:
+                keyspace_status = host_status.keyspace_statuses[keyspace]
+
+                # Populate columnfamilies in keyspace.
+                for table in host_lists[host_id]['keyspaces'][keyspace]['tables']:
+
+                    uuid_string = keyspaces[keyspace]['tables'][table].replace('-', '')
+                    columnfamily_cfid = '{0}-{1}'.format(table, uuid_string)
+
+                    threads[table] = threading.Thread(target=keyspace_status.add_columnfamily_status,
+                                                      args=(table, columnfamily_cfid))
+                    threads[table].start()
+
+            for i in threads:
+                threads[i].join()
 
     def add_host_status(self, host_id):
         host_status = HostStatus(host_id, self)
@@ -1222,7 +1538,9 @@ class KeyspaceStatus(object):
         self.columnfamily_statuses_by_cfid = {}
 
     def add_columnfamily_status(self, columnfamily_name, columnfamily_cfid):
+        logging.info('BackupStatus: Adding columnfamily status container for: {0}'.format(columnfamily_name))
         columnfamily_status = ColumnfamilyStatus(columnfamily_name, columnfamily_cfid, self)
+        logging.info('BackupStatus: Columnfamily {0} status container complete.'.format(columnfamily_name))
         self.columnfamily_statuses[columnfamily_name] = columnfamily_status
         self.columnfamily_statuses_by_cfid[columnfamily_cfid] = columnfamily_status
         return columnfamily_status
@@ -1247,12 +1565,18 @@ class KeyspaceStatus(object):
 
 
 class ColumnfamilyStatus(object):
+    """
+    Details about the state of the columnfamily including the latest snapshot, snapshot and incremental objects, and a
+    reference to the parent KeyspaceStatus and parent BackupStatus.
+    """
+
     def __init__(self, name, columnfamily_cfid, ks_owner):
         """
+        Init.
 
-        :param name:
-        :param cfid:
-        :param KeyspaceStatus ks_owner:
+        :param str name: columnfamily name.
+        :param str cfid: columnfamily name with suffix hyphen columnfamily id hash.
+        :param KeyspaceStatus ks_owner: KeyspaceStatus object parent of this ColumnFamilyStatus object.
         """
         self.name = name
         self.columnfamily_cfid = columnfamily_cfid
@@ -1270,10 +1594,14 @@ class ColumnfamilyStatus(object):
 
         if 'full' in self.manifest:
             for snapshot in self.manifest['full']:
+                logging.info('BackupStatus: Adding snapshot status for columnfamily {0}.'.format(columnfamily_cfid))
                 snapshot_status = self.add_snapshot_status(snapshot, self.manifest['full'][snapshot])
+                logging.info('BackupStatus: Snapshot status for columnfamily {0} complete.'.format(columnfamily_cfid))
 
         if 'incremental' in self.manifest:
+            logging.info('BackupStatus: Adding incremental status for columnfamily {0}.'.format(columnfamily_cfid))
             incremental_status = self.add_incremental_status(self.manifest['incremental'])
+            logging.info('BackupStatus: Incremenatal status for columnfamily {0} complete.'.format(columnfamily_cfid))
 
     def add_snapshot_status(self, name, manifest_data):
         snapshot_status = SnapshotStatus(name, manifest_data, self)
@@ -1322,7 +1650,20 @@ class ColumnfamilyStatus(object):
 
 
 class SnapshotStatus(object):
+    """
+    Details about the state of a snapshot for a columnfamily including whether this snapshot occurred before the parent
+    object's requested restore time, if the snapshot is available on remote storage, and a dictionary of files included
+    in this snapshot.
+    """
+
     def __init__(self, name, manifest_data, cf_owner):
+        """
+        Init.
+
+        :param str name: name of snapshot (integer timestamp of when snapshot occurred).
+        :param dict manifest_data: manifest data as generated by this script.
+        :param ColumnfamilyStatus cf_owner: ColumnfamilyStatus parent object which contains this SnapshotStatus object.
+        """
         self.name = name
         # The name of the snapshot is the snapshot timestamp as the created timestamps of files can be before snapshot.
         self.snapshot_timestamp = int(self.name) / 1000
@@ -1369,7 +1710,19 @@ class SnapshotStatus(object):
 
 
 class SnapshotFileStatus(object):
+    """
+    Object describing a single snapshot file status with a reference to the parent SnapshotStatus object.
+    """
+
     def __init__(self, filename, created_timestamp, available_on_remote, snapshot_owner):
+        """
+        Init.
+
+        :param str filename: filename.
+        :param int created_timestamp:
+        :param bool available_on_remote: if file is available on remote storage.
+        :param SnapshotStatus snapshot_owner: SnapshotStatus parent object containing this SnapshotFileStatus object.
+        """
         self.filename = filename
         self.available_on_remote = available_on_remote
         self.created_timestamp = created_timestamp
@@ -1384,20 +1737,60 @@ class SnapshotFileStatus(object):
 
 
 class IncrementalStatus(object):
+    """
+    Object containing a dictionary of IncrementalFileStatus objects and a reference to the ColumnfamilyStatus parent.
+    """
+
     def __init__(self, manifest_data, cf_owner):
+        """
+        Generate dict describing incremental file status objects.
+
+        :param dict manifest_data: manifest data dict as generated by this script.
+        :param ColumnfamilyStatus cf_owner: ColumnfamilyStatus parent object containing this IncrementalStatus object.
+        """
         self.manifest_data = manifest_data
         self.cf_owner = cf_owner
         self.backup_repo = self.cf_owner.ks_owner.host_owner.backup_status.backup_repo
         self.incremental_file_statuses = {}
 
+        s = time.time()
         remote_incrementals = self.backup_repo.list_backup_files(self.cf_owner.ks_owner.host_owner.host_id,
                                                                  self.cf_owner.ks_owner.name,
                                                                  self.cf_owner.columnfamily_cfid)
 
+        logging.info('BackupStatus: Download Time {0}'.format(int(time.time() - s)))
+
+        try:
+            generation = cf_owner.latest_snapshot.manifest_data.keys()[0].split('-')[1]
+        except AttributeError:
+            generation = 0
+
+        pre = len(remote_incrementals)
+        remote_incrementals = filter(lambda n: (n[0] != '.' and n.split('-')[1] >= generation), remote_incrementals)
+        post = len(remote_incrementals)
+        logging.info('BackupStatus: Reduced list size from {0} to {1}: {2} less.'.format(pre, post, pre - post))
+
+        # Separate list of remote incrementals into individual lists by file.
+        suffixes = ['big-CompressionInfo.db', 'big-Data.db', 'big-Digest.adler32', 'big-Filter.db', 'big-Index.db',
+                    'big-Statistics.db', 'big-Summary.db', 'big-TOC.txt', 'big-Digest.crc32']
+        suffix_remote_incrementals = {}
+        for suffix in suffixes:
+            suffix_remote_incrementals[suffix] = set([ri for ri in remote_incrementals if ri.endswith(suffix)])
+
+        s = time.time()
         for filename in manifest_data:
             created_timestamp = from_human_readable_time(manifest_data[filename]['created'])
-            available_on_remote = remote_incrementals is not None and filename in remote_incrementals
+            # Only incremental files created after the latest snapshot are needed.
+            if self.cf_owner.latest_snapshot and created_timestamp <= self.cf_owner.latest_snapshot.snapshot_timestamp:
+                continue
+
+            logging.info('BackupStatus: Checking if {0} available on remote.'.format(filename))
+            suffix = '-'.join(filename.split('-')[-2:])
+            available_on_remote = remote_incrementals is not None and filename in suffix_remote_incrementals[suffix]
+            logging.info('BackupStatus: Remote availability of {0}: {1}'.format(filename, available_on_remote))
+
             self.add_incremental_file_status(filename, created_timestamp, available_on_remote)
+        logging.info('BackupStatus: Check Time {0}'.format(int(time.time() - s)))
 
     def add_incremental_file_status(self, filename, created_timestamp, available_on_remote):
         incremental_file_status = IncrementalFileStatus(filename, created_timestamp, available_on_remote, self)
@@ -1466,7 +1859,7 @@ class BackupManager(object):
         self.backup_repo = backup_repo
         self.manifest_manager = manifest_manager
 
-    def full_backup(self, columnfamily=None):
+    def full_backup(self, columnfamily=None, thread_limit=4):
         """
         Run a full backup (snapshot) on this cassandra node and upload it to remote storage.
 
@@ -1483,15 +1876,19 @@ class BackupManager(object):
         self.cassandra.nodetool_snapshot(snapshot_name, columnfamily)
 
         if self.backup_repo:
-            self.manifest_manager.download_manifests(self.cassandra.host_id)
-            self.manifest_manager.update_snapshot_manifests(snapshot_name, columnfamily)
-            self.manifest_manager.upload_manifests(self.cassandra.host_id)
+            try:
+                self.manifest_manager.download_manifests(self.cassandra.host_id)
+                self.manifest_manager.update_snapshot_manifests(snapshot_name, columnfamily)
+                self.manifest_manager.upload_manifests(self.cassandra.host_id)
 
-            self.backup_repo.upload_snapshot(self.cassandra.host_id, self.cassandra.data_file_directories,
-                                             snapshot_name)
-
-            logging.info('Clearing snapshot {0} data'.format(snapshot_name))
-            self.cassandra.nodetool_clearsnapshot(snapshot_name)
+                self.backup_repo.upload_snapshot(self.cassandra.host_id, self.cassandra.data_file_directories,
+                                                 snapshot_name, thread_limit)
+            except Exception as exception:
+                logging.warning('Exception when uploading during full_backup: {0}'.format(exception))
+                raise exception
+            finally:
+                logging.info('Clearing snapshot {0} data'.format(snapshot_name))
+                self.cassandra.nodetool_clearsnapshot(snapshot_name)
 
         logging.info('Finished snapshot after {0} seconds.'.format(int(time.time() - snapshot_start)))
 
@@ -1515,6 +1912,13 @@ class BackupManager(object):
                         incremental_files[root] = []
                     filename = os.path.join(root, file)
                     incremental_files[root].append(filename)
+            if '/backups' in root and '/.' in root and root.endswith('_idx'):
+                root = root[len(data_file_directory):] + '/'
+                for file in files:
+                    if root not in incremental_files.keys():
+                        incremental_files[root] = []
+                    filename = os.path.join(root, file)
+                    incremental_files[root].append(filename)
 
         path_filter = None
         if columnfamily is not None:
@@ -1523,13 +1927,13 @@ class BackupManager(object):
 
         if path_filter is not None:
             incremental_files = {
-                i: incremental_files[i] for i in incremental_files if i[0:len(path_filter)] == path_filter
+                i: incremental_files[i] for i in incremental_files if i.startswith(path_filter)
             }
 
         return incremental_files
 
     @filelocked('/tmp/.incremental_cassandra_backup')
-    def incremental_backup(self, columnfamily=None):
+    def incremental_backup(self, columnfamily=None, thread_limit=4):
         """
         Sync incremental backups that are stored on this cassandra node and upload them to remote storage. This will
         remove incremental files after uploading.
@@ -1544,107 +1948,136 @@ class BackupManager(object):
             logging.critical('You must enable backups to use this feature.')
             raise RuntimeError('Backups are not enabled.')
 
-        self.manifest_manager.download_manifests(self.cassandra.host_id)
+        for ks in self.cassandra.keyspace_schema_data:
+            for cf in self.cassandra.keyspace_schema_data[ks]['tables']:
+                ks_cf = '{ks}.{cf}'.format(ks=ks, cf=cf)
+                try:
+                    self.manifest_manager.download_manifests(self.cassandra.host_id, ks_cf)
+                except Exception as exception:
+                    logging.info('Incremental manifest download for {0} error: {1}'.format(ks_cf, exception))
 
+        all_incremental_files = []
         for data_file_directory in self.cassandra.data_file_directories:
             incremental_files = self.__find_incremental_files(data_file_directory, columnfamily)
-
+            all_incremental_files.append((data_file_directory, incremental_files))
             updated_manifest_files = self.manifest_manager.incremental_manifest(data_file_directory, incremental_files)
 
-            self.manifest_manager.upload_manifests(self.cassandra.host_id, updated_manifest_files)
+        for ks in self.cassandra.keyspace_schema_data:
+            for cf in self.cassandra.keyspace_schema_data[ks]['tables']:
+                ks_cf = '{ks}.{cf}'.format(ks=ks, cf=cf)
+                try:
+                    self.manifest_manager.upload_manifests(self.cassandra.host_id, ks_cf)
+                except Exception as exception:
+                    logging.info('Incremental manifest upload for {0} error: {1}'.format(ks_cf, exception))
 
         for data_file_directory in self.cassandra.data_file_directories:
-            incremental_files = self.__find_incremental_files(data_file_directory)
+            files_to_upload = []
+            for path in incremental_files:
+                files_to_upload.append(path + '/')
 
-            self.backup_repo.upload_incremental_backups(self.cassandra.host_id, data_file_directory,
-                                                        incremental_files.keys())
+            logging.info('Preparing to upload {0} files using {1} threads.'.format(len(files_to_upload), thread_limit))
+            for ti in range(0, len(files_to_upload), thread_limit):
+                files_to_upload_subset = files_to_upload[ti:ti + thread_limit]
 
-            logging.info('Clearing incremental files.')
+                logging.info('Starting {0} threads.'.format(len(files_to_upload_subset)))
+                upload_threads = []
+                for files_to_upload_subset_item in files_to_upload_subset:
+                    upload_thread = threading.Thread(target=self.backup_repo.upload_incremental_backups, args=(
+                        self.cassandra.host_id, data_file_directory, files_to_upload_subset_item))
+                    upload_threads.append(upload_thread)
+                    upload_thread.start()
+
+                for upload_thread in upload_threads:
+                    upload_thread.join()
+
+        logging.info('Clearing incremental files.')
+        for data_file_directory, incremental_files in all_incremental_files:
             self.cassandra.clear_incrementals(data_file_directory, incremental_files.items())
 
         logging.info('Finished incremental backup after {0} seconds.'.format(int(time.time() - incremental_start)))
 
-    def status(self, columnfamily, restore_time):
+    def status(self, columnfamily, restore_time, quiet):
         """
         Output the latest available backup time and associated files from the backup repository for this host.
 
         :param str columnfamily: optionally only get status for this keyspace and columnfamily.
-        :param bool print_status: optionally choose whether to print status output.
+        :param int restore_time: timestamp for latest time which can be used to determine restore status and operations.
+        :param bool quiet: optionally hide file status output and only print restore time.
         """
-        backup_status = BackupStatus(self.manifest_manager, self.backup_repo, restore_time)
+        backup_status = BackupStatus(self.manifest_manager, self.backup_repo, restore_time, columnfamily)
+        logging.info(backup_status.status_output())
+        if not quiet:
+            print backup_status.status_output()
 
-        # Get hosts.
-        # TODO: Refactor all of this to be in the init of backupstatus.
-        host_lists = self.manifest_manager.get_host_lists()
-
-        for host_id in host_lists:
-            self.manifest_manager.download_manifests(host_id)
-            host_status = backup_status.add_host_status(host_id)
-
-            keyspaces = host_lists[host_id]['keyspaces']
-            if columnfamily is not None:
-                keyspaces = filter_keyspaces(keyspaces, columnfamily)
-
-            for keyspace in keyspaces:
-                keyspace_status = host_status.add_keyspace_status(keyspace)
-
-                # Populate columnfamilies in keyspace.
-                for table in host_lists[host_id]['keyspaces'][keyspace]['tables']:
-                    uuid_string = keyspaces[keyspace]['tables'][table].replace('-', '')
-                    columnfamily_cfid = '{0}-{1}'.format(table, uuid_string)
-                    columnfamily_status = keyspace_status.add_columnfamily_status(table, columnfamily_cfid)
-
-        print backup_status.status_output()
         if backup_status.latest_restore_timestamp():
-            print 'Restore time: {0}'.format(to_human_readable_time(backup_status.latest_restore_timestamp()))
+            output = 'Restore time: {0}'.format(to_human_readable_time(backup_status.latest_restore_timestamp()))
         else:
-            print 'Restore time: N/A'
+            output = 'Restore time: N/A'
+
+        logging.info(output)
+        print output
 
         return backup_status
 
-    def restore(self, columnfamily, nodes, restore_time):
-        run_command(['rm', '-rf', '/tmp/restore'])
-        run_command(['rm', '-rf', '/tmp/restore-download'])
+    @filelocked(lambda: RESTORE_DIR_FILELOCK)
+    def restore(self, columnfamily, nodes, restore_time=None, restore_dir=None, host_ids=None, username=None,
+                password=None):
+        """
+        Restore backup of columnfamily to provided nodes. This will use sstableloader to stream data after downloading
+        from the selected backup repository.
 
-        backup_status = BackupStatus(self.manifest_manager, self.backup_repo, restore_time)
+        Optionally provide a restore_time to restore up to that point.
+        Optionally provide a restore_dir to use a restore directory other than tmp to download and organize files.
+        Optionally provide host_ids to only restore data from selected hosts.
 
-        # Get hosts.
-        # TODO: Refactor all of this to be in the init of backupstatus.
-        host_lists = self.manifest_manager.get_host_lists()
+        :param str columnfamily: dot separated keyspace and columnfamily.
+        :param str nodes: comma separated list of nodes for sstableloader to connect to.
+        :param str restore_time: time to restore to.
+        :param str restore_dir: directory to use for restore download and file organization.
+        :param list[str] host_ids: list of host_ids to filter for restore.
+        :param str username: optional username to provide sstableloader.
+        :param str password: optional password to provide sstableloader.
+        """
+        restore_start = time.time()
 
-        for host_id in host_lists:
-            self.manifest_manager.download_manifests(host_id)
-            host_status = backup_status.add_host_status(host_id)
+        restore_dir = restore_dir.rstrip('/')
 
-            keyspaces = host_lists[host_id]['keyspaces']
-            if columnfamily is not None:
-                keyspaces = filter_keyspaces(keyspaces, columnfamily)
-
-            for keyspace in keyspaces:
-                keyspace_status = host_status.add_keyspace_status(keyspace)
-
-                # Populate columnfamilies in keyspace.
-                for columnfamily in host_lists[host_id]['keyspaces'][keyspace]['tables']:
-                    uuid_string = keyspaces[keyspace]['tables'][columnfamily].replace('-', '')
-                    columnfamily_cfid = '{0}-{1}'.format(columnfamily, uuid_string)
-                    columnfamily_status = keyspace_status.add_columnfamily_status(columnfamily, columnfamily_cfid)
+        logging.info('Acquiring status for {0}.'.format(columnfamily))
+        backup_status = BackupStatus(self.manifest_manager, self.backup_repo, restore_time, columnfamily, host_ids)
 
         status_output_by_host = backup_status.status_output_by_host()
 
         for host in status_output_by_host:
-            files_to_download = []
+            snapshot_files_to_download = []
+            backup_files_to_download = []
 
             for item in status_output_by_host[host]:
                 if isinstance(item, SnapshotFileStatus) or isinstance(item, IncrementalFileStatus):
-                    files_to_download.append(item.remote_path)
+                    remote_path = item.remote_path
+                    if isinstance(item, SnapshotFileStatus):
+                        snapshot_path = remote_path[0:remote_path.index('/snapshots/')]
+                        snapshot_name = item.snapshot_owner.name
+                        remote_path = '{0}/snapshots/{1}/*'.format(snapshot_path, snapshot_name)
+                        snapshot_files_to_download.append(remote_path)
+                    else:
+                        backup_files_to_download.append(remote_path)
 
-            print 'Downloading {0} files for restore to /tmp/restore-download/:'.format(len(files_to_download))
+            snapshot_files_to_download = list(set(snapshot_files_to_download))
+            backup_files_to_download = glob_optimize_backup_paths(backup_files_to_download)
+            files_to_download = snapshot_files_to_download + backup_files_to_download
+
+            logging.info('Clearing restore directory: {0}'.format(restore_dir))
+            run_command(['rm', '-rf', restore_dir])
+
+            logging.info('Starting downloads for restore.')
+
             for file_to_download in files_to_download:
-                self.backup_repo.download_files([file_to_download], '/tmp/restore-download')
-                sys.stdout.write('.')
-                sys.stdout.flush()
+                remote_split = file_to_download.split('/')
+                local_path = '{0}/download/{1}/'.format(restore_dir, '/'.join(remote_split[-6:-1]))
+                logging.info('Downloading: {0}'.format(file_to_download))
+                self.backup_repo.download_files(file_to_download, local_path)
 
-            print '\nDownload complete.'
+            logging.info('Download complete.')
 
             # Move files
             host_status = backup_status.host_statuses[host]
@@ -1657,9 +2090,9 @@ class BackupManager(object):
                     snapshot = cf_status.latest_snapshot
                     if snapshot is not None:
                         snapshot_id = snapshot.name
-                        downloaded_path = '/tmp/restore-download/{0}/{1}/{2}/snapshots/{3}'.format(
-                            host, ks, cfid, snapshot_id)
-                        restore_path = '/tmp/restore/{0}/{1}/'.format(ks, cf)
+                        downloaded_path = '{0}/download/{1}/{2}/{3}/snapshots/{4}'.format(
+                            restore_dir, host, ks, cfid, snapshot_id)
+                        restore_path = '{0}/{1}/{2}/'.format(restore_dir, ks, cf)
 
                         downloaded_files = os.listdir(downloaded_path)
                         for downloaded_file in downloaded_files:
@@ -1676,19 +2109,39 @@ class BackupManager(object):
                                 continue
 
                             filename = incremental_file_status.filename
-                            downloaded_path = '/tmp/restore-download/{0}/{1}/{2}/backups/{3}'.format(
-                                host, ks, cfid, filename)
-                            restore_path = '/tmp/restore/{0}/{1}/{2}'.format(ks, cf, filename)
+                            downloaded_path = '{0}/download/{1}/{2}/{3}/backups/{4}'.format(
+                                restore_dir, host, ks, cfid, filename)
+                            restore_path = '{0}/{1}/{2}/{3}'.format(restore_dir, ks, cf, filename)
                             if not os.path.exists(os.path.dirname(restore_path)):
                                 os.makedirs(os.path.dirname(restore_path))
-                            os.rename(downloaded_path, restore_path)
+
+                            if os.path.exists(downloaded_path):
+                                os.rename(downloaded_path, restore_path)
+                            else:
+                                logging.warning('Incremental file in manifest does not exist: {0}.'.format(
+                                    downloaded_path))
+
+            if username is None and password is None:
+                try:
+                    config = ConfigParser.ConfigParser()
+                    config.read(os.path.expanduser('~')+'/.cassandra/cqlshrc')
+                    username = config.get('authentication', 'username')
+                    password = config.get('authentication', 'password')
+                except ConfigParser.NoSectionError:
+                    pass
+                except ConfigParser.NoOptionError:
+                    pass
 
             for ks in host_status.keyspace_statuses:
                 ks_status = host_status.keyspace_statuses[ks]
                 for cf in ks_status.columnfamily_statuses:
-                    cmd = ['sstableloader', '-d', nodes, '/tmp/restore/{0}/{1}'.format(ks, cf)]
+                    cmd = ['sstableloader', '-d', nodes, '{0}/{1}/{2}'.format(restore_dir, ks, cf)]
+                    if username and password:
+                        cmd += ['-u', username, '-pw', password]
                     return_code, out, err = run_command(cmd)
-                    print out
+                    logging.info('Output for sstableloader restore to {0}:\n{1}'.format(nodes, out))
+
+        logging.info('Finished restore after {0} seconds.'.format(int(time.time() - restore_start)))
 
 
 if __name__ == '__main__':
@@ -1705,25 +2158,46 @@ if __name__ == '__main__':
             repo_parser.add_argument('--cassandra-config', dest='cassandra_config',
                                      default='/etc/cassandra/conf/cassandra.yaml',
                                      help='Place to find the cassandra configuration file')
-            repo_parser.add_argument('--columnfamily', help='Only execute backup on specified columnfamily. Must '
-                                                            'include keyspace in the format: <keyspace>.<columnfamily>')
+            columnfamily_arg = repo_parser.add_argument(
+                '--columnfamily', help='Only execute backup on specified columnfamily. Must include keyspace in the '
+                                       'format: <keyspace>.<columnfamily>')
             # cqlsh options
             repo_parser.add_argument('--cqlsh-host', dest='cqlsh_host', required=False, default=socket.getfqdn(),
                                      help='Sets the cqlsh host that will be used to run cqlsh commands')
+            repo_parser.add_argument('--cqlsh-ssl', dest='cqlsh_ssl', required=False, default=False, action='store_true',
+                                     help='Uses SSL when connecting to CQLSH')
+            repo_parser.add_argument('--cqlsh-user', dest='cqlsh_user', required=False,
+                                     help='Optionally provide username to use when connecting to CQLSH')
+            repo_parser.add_argument('--cqlsh-pass', dest='cqlsh_pass', required=False,
+                                     help='Optionally provide password to use when connecting to CQLSH')
+
             # Debugging
             repo_parser.add_argument('--dry-run', dest='dry_run', action='store_true', default=False,
                                      help='Instead of running commands, print simulated commands that would have run.')
             repo_parser.add_argument('--debug', action='store_true', default=False, dest='debug',
                                      help='Enable verbose DEBUG level logging.')
             repo_parser.add_argument('--log-to-file', help='Redirect all logging to file. Output is not redirected.')
+            repo_parser.add_argument('--meta-path', help='Path for which to store meta JSON data.',
+                                     default='/tmp/onzra_casandra_backup_service')
+            repo_parser.add_argument('--thread-limit', type=int, help='Maximum number of concurrent threads.',
+                                     default=4)
 
             if action == 'status':
+                columnfamily_arg.required = True
                 repo_parser.add_argument('--restore-time', help='UTC timestamp in seconds to get status up to.')
+                repo_parser.add_argument('--quiet', action='store_true', help='Hide file output and only print time.')
 
             if action == 'restore':
+                columnfamily_arg.required = True
                 repo_parser.add_argument('--destination-nodes', help='Connect to a list of (comma separated) hosts for '
                                                                      'initial cluster information', required=True)
                 repo_parser.add_argument('--restore-time', help='UTC timestamp in seconds to restore nodes to.')
+                repo_parser.add_argument('--restore-dir', default='/tmp/restore',
+                                         help='Temporary directory to use for downloading and restoring files. This '
+                                              'directory will be destroyed and recreated during the restore process.')
+                repo_parser.add_argument('--limit-host-ids', help='Comma separated list of hosts to filter a restore.')
+                repo_parser.add_argument('--username', help='Username with restore privileges for sstableloader.')
+                repo_parser.add_argument('--password', help='Password with restore privileges for sstableloader.')
 
     args = parser.parse_args()
 
@@ -1738,12 +2212,15 @@ if __name__ == '__main__':
     else:
         logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s')
 
+    if args.meta_path:
+        meta_path = args.meta_path
+
     if args.action in ('full', 'incremental'):
         cass = Cassandra(args)
         meta_path = cass.meta_path
-    else:
+    elif args.action in ('status', 'restore'):
         cass = None
-        meta_path = '/tmp'
+        meta_path = tempfile.mkdtemp()
 
     if args.repo is AWSBackupRepo:
         repo = AWSBackupRepo(meta_path, args.s3_bucket, args.s3_sse)
@@ -1751,15 +2228,38 @@ if __name__ == '__main__':
     manifest_manager = ManifestManager(cass, meta_path, repo)
     backup_manager = BackupManager(cass, repo, manifest_manager)
 
-    if args.action == 'full':
-        backup_manager.full_backup(args.columnfamily)
-    elif args.action == 'incremental':
-        try:
-            backup_manager.incremental_backup(args.columnfamily)
-        except FileLockedError as file_locked_error:
-            logging.critical('Incremental backup in progress using {0} lock file.'.format(file_locked_error))
-            exit(0)
-    elif args.action == 'status':
-        backup_manager.status(args.columnfamily, args.restore_time)
-    elif args.action == 'restore':
-        backup_manager.restore(args.columnfamily, args.destination_nodes, args.restore_time)
+    try:
+        if args.action == 'full':
+            backup_manager.full_backup(args.columnfamily)
+            full_status_file = '/tmp/onzra_cassandra_backup_service-full.status'
+            with open(full_status_file, 'a'):
+                os.utime(full_status_file, None)
+            os.chmod(full_status_file, stat.S_IRWXO | stat.S_IRWXG | stat.S_IRWXU)
+        elif args.action == 'incremental':
+            try:
+                backup_manager.incremental_backup(args.columnfamily, args.thread_limit)
+            except FileLockedError as file_locked_error:
+                logging.warning('Incremental backup in progress using {0} lock file.'.format(file_locked_error))
+                exit(10)
+        elif args.action == 'status':
+            backup_manager.status(args.columnfamily, args.restore_time, args.quiet)
+        elif args.action == 'restore':
+            if not os.path.exists(args.restore_dir):
+                os.makedirs(args.restore_dir)
+            RESTORE_DIR_FILELOCK = '{0}.filelock'.format(args.restore_dir)
+            host_ids = args.limit_host_ids.split(',') if args.limit_host_ids else None
+            try:
+                backup_manager.restore(args.columnfamily, args.destination_nodes, args.restore_time, args.restore_dir,
+                                       host_ids, args.username, args.password)
+            except FileLockedError as file_locked_error:
+                logging.warning('Restore in progress using {0} lock file.'.format(file_locked_error))
+                exit(10)
+
+    except Exception as exception:
+        logging.exception('Exception during action: {0}'.format(args.action))
+        raise
+
+    if args.action in ('status', 'restore'):
+        run_command(['rm', '-rf', meta_path])
+
+    exit(0)
