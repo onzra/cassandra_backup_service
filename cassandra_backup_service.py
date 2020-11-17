@@ -487,13 +487,13 @@ class AWSBackupRepo(BaseBackupRepo):
             if local_path.endswith('/'):
                 cmd = ['aws', 's3', 'cp']
                 if self.s3_storage_class:
-                    cmd += ['--storage-class', 'STANDARD_IA']
+                    cmd += ['--storage-class', self.s3_storage_class]
                 cmd += ['--recursive', local_path, remote_path]
                 cmd.extend(['--exclude', '{0}/.*'.format(local_path)])
             else:
                 cmd = ['aws', 's3', 'cp']
                 if self.s3_storage_class:
-                    cmd += ['--storage-class', 'STANDARD_IA']
+                    cmd += ['--storage-class', self.s3_storage_class]
                 cmd += [local_path, remote_path]
 
                 cmd.extend(['--exclude', '{0}/.*'.format(local_path)])
