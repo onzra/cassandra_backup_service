@@ -404,7 +404,7 @@ class AWSBackupRepo(BaseBackupRepo):
         parser.add_argument('--aws-s3-sse', dest='s3_sse', default=True,
                             help='Use SSE for the connection to S3')
         parser.add_argument('--aws-s3-storage-class', dest='s3_storage_class', required=False,
-                            help='Optionally provide storage class for S3')
+                            help='Optionally provide storage class for S3', default='STANDARD_IA')
         return parser
 
     def __init__(self, meta_path, s3_bucket, s3_ss3, s3_storage_class):
