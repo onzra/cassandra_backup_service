@@ -403,9 +403,11 @@ class AWSBackupRepo(BaseBackupRepo):
                             help='The AWS S3 Directory to upload this backup to.')
         parser.add_argument('--aws-s3-sse', dest='s3_sse', default=True,
                             help='Use SSE for the connection to S3')
+        parser.add_argument('--aws-s3-storage-class', dest='s3_storage_class', required=False,
+                            help='Optionally provide storage class for S3', default='STANDARD_IA')
         return parser
 
-    def __init__(self, meta_path, s3_bucket, s3_ss3):
+    def __init__(self, meta_path, s3_bucket, s3_ss3, s3_storage_class):
         """
         Init.
 
@@ -421,6 +423,7 @@ class AWSBackupRepo(BaseBackupRepo):
 
         self.s3_bucket = s3_bucket
         self.s3_sse = s3_ss3
+        self.s3_storage_class = s3_storage_class
 
     def upload_snapshot(self, host_id, data_file_directories, snapshot_name, thread_limit=4):
         """
@@ -438,7 +441,10 @@ class AWSBackupRepo(BaseBackupRepo):
 
             for path in glob.glob('{0}/*/*/snapshots/{1}/'.format(data_file_directory, snapshot_name)):
                 remote_path = '{0}/{1}'.format(bucket, path.replace(data_file_directory, ''))
-                cmd = ['aws', 's3', 'cp', '--recursive', '--storage-class', 'STANDARD_IA', path, remote_path]
+                cmd = ['aws', 's3', 'cp', '--recursive']
+                if self.s3_storage_class:
+                    cmd += ['--storage-class', self.s3_storage_class]
+                cmd += [path, remote_path]
                 if self.s3_sse:
                     cmd.append('--sse')
 
@@ -479,10 +485,17 @@ class AWSBackupRepo(BaseBackupRepo):
             local_path = '{0}{1}'.format(data_file_directory, filepath)
             remote_path = '{0}/{1}'.format(bucket, filepath)
             if local_path.endswith('/'):
-                cmd = ['aws', 's3', 'cp', '--storage-class', 'STANDARD_IA', '--recursive', local_path, remote_path]
+                cmd = ['aws', 's3', 'cp']
+                if self.s3_storage_class:
+                    cmd += ['--storage-class', self.s3_storage_class]
+                cmd += ['--recursive', local_path, remote_path]
                 cmd.extend(['--exclude', '{0}/.*'.format(local_path)])
             else:
-                cmd = ['aws', 's3', 'cp', '--storage-class', 'STANDARD_IA', local_path, remote_path]
+                cmd = ['aws', 's3', 'cp']
+                if self.s3_storage_class:
+                    cmd += ['--storage-class', self.s3_storage_class]
+                cmd += [local_path, remote_path]
+
                 cmd.extend(['--exclude', '{0}/.*'.format(local_path)])
         else:
             if columnfamily:
@@ -2223,7 +2236,7 @@ if __name__ == '__main__':
         meta_path = tempfile.mkdtemp()
 
     if args.repo is AWSBackupRepo:
-        repo = AWSBackupRepo(meta_path, args.s3_bucket, args.s3_sse)
+        repo = AWSBackupRepo(meta_path, args.s3_bucket, args.s3_sse, args.s3_storage_class)
 
     manifest_manager = ManifestManager(cass, meta_path, repo)
     backup_manager = BackupManager(cass, repo, manifest_manager)
