@@ -1090,16 +1090,19 @@ class ManifestManager(object):
     meta_path = None
     backup_repo = None
 
-    def __init__(self, cassandra, meta_path, backup_repo):
+    def __init__(self, cassandra, meta_path, backup_repo, retention_days):
         """
         Init.
 
         :param Cassandra cassandra: Cassandra information resource.
+        :param str meta_path: meta path.
         :param BaseBackupRepo backup_repo: backup repository class.
+        :param int retention_days: number of days to retain manifest data.
         """
         self.cassandra = cassandra
         self.meta_path = meta_path
         self.backup_repo = backup_repo
+        self.retention_days = retention_days
 
     def get_md5sum(self, path):
         """
@@ -1327,6 +1330,9 @@ class ManifestManager(object):
         :rtype: str
         :return: path of manifest file that was saved.
         """
+        if self.retention_days:
+            self.manifest_data_retention_pruning(manifest)
+
         manifest['updated'] = to_human_readable_time()
 
         manifest_file_path = self.get_manifest_file_path(keyspace, columnfamily)
@@ -1341,6 +1347,32 @@ class ManifestManager(object):
         os.rename(manifest_temp_file_path, manifest_file_path)
 
         return manifest_file_path
+
+    def manifest_data_retention_pruning(self, data):
+        """
+        Prune provided data to only values within the defined self.retention_days time range.
+
+        :param dict data: manifest data.
+        """
+        if 'full' in data:
+            full_to_delete = []
+            for full_ts in data['full']:
+                full_days_old = int(time.mktime(time.gmtime()) - time.mktime(time.gmtime(int(full_ts)/1000)))/86400
+                if full_days_old > self.retention_days:
+                    full_to_delete.append(full_ts)
+
+            for full_ts in full_to_delete:
+                del data['full'][full_ts]
+
+        if 'incremental' in data:
+            inc_to_delete = []
+            for inc_ts in data['incremental']:
+                inc_days_old = int(time.mktime(time.gmtime()) - time.mktime(time.gmtime(int(inc_ts)/1000)))/86400
+                if inc_days_old > self.retention_days:
+                    inc_days_old.append(inc_ts)
+
+            for inc_ts in inc_to_delete:
+                del data['incremental'][inc_ts]
 
     def download_manifests(self, host_id, columnfamily=None):
         """
@@ -2205,7 +2237,9 @@ if __name__ == '__main__':
                                      help='Optionally provide username to use when connecting to CQLSH')
             repo_parser.add_argument('--cqlsh-pass', dest='cqlsh_pass', required=False,
                                      help='Optionally provide password to use when connecting to CQLSH')
-
+            # Manifest options
+            repo_parser.add_argument('--retention-days', dest='retention_days', required=False, default=30,
+                                     help='Optionally provide how many days to retain manifest data (default 30)')
             # Debugging
             repo_parser.add_argument('--dry-run', dest='dry_run', action='store_true', default=False,
                                      help='Instead of running commands, print simulated commands that would have run.')
@@ -2260,7 +2294,7 @@ if __name__ == '__main__':
     if args.repo is AWSBackupRepo:
         repo = AWSBackupRepo(meta_path, args.s3_bucket, args.s3_metadata_bucket, args.s3_storage_class, args.s3_sse)
 
-    manifest_manager = ManifestManager(cass, meta_path, repo)
+    manifest_manager = ManifestManager(cass, meta_path, repo, args.retention_days)
     backup_manager = BackupManager(cass, repo, manifest_manager)
 
     try:
