@@ -401,18 +401,22 @@ class AWSBackupRepo(BaseBackupRepo):
         parser.set_defaults(repo=cls)
         parser.add_argument('--aws-s3-bucket', dest='s3_bucket', default=None, required=True,
                             help='The AWS S3 Directory to upload this backup to.')
+        parser.add_argument('--aws-s3-metadata-bucket', dest='s3_metadata_bucket', default=None, required=True,
+                            help='The AWS S3 Directory to upload this backup metadata to.')
         parser.add_argument('--aws-s3-sse', dest='s3_sse', default=True,
                             help='Use SSE for the connection to S3')
         parser.add_argument('--aws-s3-storage-class', dest='s3_storage_class', required=False,
                             help='Optionally provide storage class for S3', default='STANDARD_IA')
         return parser
 
-    def __init__(self, meta_path, s3_bucket, s3_ss3, s3_storage_class):
+    def __init__(self, meta_path, s3_bucket, s3_metadata_bucket, s3_storage_class, s3_ss3):
         """
         Init.
 
         :param str meta_path: meta path.
         :param str s3_bucket: S3 bucket.
+        :param str s3_metadata_bucket: S3 metadata bucket.
+        :param str s3_storage_class: S3 storage class.
         :param bool s3_ss3: S3 server side encryption flag.
         """
         super(AWSBackupRepo, self).__init__(meta_path)
@@ -420,8 +424,11 @@ class AWSBackupRepo(BaseBackupRepo):
         # Trim the trailing slash
         if s3_bucket.endswith('/'):
             s3_bucket = s3_bucket[:-1]
+        if s3_metadata_bucket.endswith('/'):
+            s3_metadata_bucket = s3_metadata_bucket[:-1]
 
         self.s3_bucket = s3_bucket
+        self.s3_metadata_bucket = s3_metadata_bucket
         self.s3_sse = s3_ss3
         self.s3_storage_class = s3_storage_class
 
@@ -520,7 +527,7 @@ class AWSBackupRepo(BaseBackupRepo):
         :param str columnfamily: optional columnfamily specification.
         """
         local_path = '{0}/'.format(self.meta_path)
-        s3_path = '{0}/{1}'.format(self.s3_bucket, host_id)
+        s3_path = '{0}/{1}'.format(self.s3_metadata_bucket, host_id)
 
         if not columnfamily:
             logging.info('Downloading manifest files to: {0}'.format(local_path))
@@ -552,7 +559,7 @@ class AWSBackupRepo(BaseBackupRepo):
         columnfamilies in this host. If the list contains paths, this function will only upload the provided paths.
         """
         local_path = '{0}/'.format(self.meta_path)
-        s3_path = '{0}/{1}'.format(self.s3_bucket, host_id)
+        s3_path = '{0}/{1}'.format(self.s3_metadata_bucket, host_id)
 
         if not columnfamily:
             logging.info('Uploading manifest files to: {0}'.format(local_path))
@@ -586,7 +593,7 @@ class AWSBackupRepo(BaseBackupRepo):
         cmd = []
 
         cmd.extend(['aws', 's3', 'cp'])
-        bucket = '{0}/meta/{1}'.format(self.s3_bucket, filename)
+        bucket = '{0}/meta/{1}'.format(self.s3_metadata_bucket, filename)
         cmd.extend([local_path, bucket])
 
         if self.s3_sse:
@@ -615,7 +622,7 @@ class AWSBackupRepo(BaseBackupRepo):
         :rtype: list[str]
         :return: list of host list strings.
         """
-        path = '{0}/meta/'.format(self.s3_bucket)
+        path = '{0}/meta/'.format(self.s3_metadata_bucket)
         cmd = ['aws', 's3', 'ls', path]
         _, out, _ = run_command(cmd)
         return [o.split(' ')[-1] for o in out.split('\n') if '_' in o]
@@ -632,7 +639,7 @@ class AWSBackupRepo(BaseBackupRepo):
         """
         filename = '{0}_{1}.json'.format(host_id, timestamp)
 
-        remote_path = '{0}/meta/{1}'.format(self.s3_bucket, filename)
+        remote_path = '{0}/meta/{1}'.format(self.s3_metadata_bucket, filename)
         local_path = '{mp}/{fn}'.format(mp=self.meta_path, fn=filename)
 
         cmd = ['aws', 's3', 'cp', remote_path, local_path]
@@ -2236,7 +2243,7 @@ if __name__ == '__main__':
         meta_path = tempfile.mkdtemp()
 
     if args.repo is AWSBackupRepo:
-        repo = AWSBackupRepo(meta_path, args.s3_bucket, args.s3_sse, args.s3_storage_class)
+        repo = AWSBackupRepo(meta_path, args.s3_bucket, args.s3_metadata_bucket, args.s3_storage_class, args.s3_sse)
 
     manifest_manager = ManifestManager(cass, meta_path, repo)
     backup_manager = BackupManager(cass, repo, manifest_manager)
