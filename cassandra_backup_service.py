@@ -1363,6 +1363,7 @@ class ManifestManager(object):
 
             for full_ts in full_to_delete:
                 del data['full'][full_ts]
+                logging.debug('Removing full record from manifest: {0}'.format(full_ts))
 
         if 'incremental' in data:
             inc_to_delete = []
@@ -1373,6 +1374,7 @@ class ManifestManager(object):
 
             for inc_ts in inc_to_delete:
                 del data['incremental'][inc_ts]
+                logging.debug('Removing incremental record from manifest: {0}'.format(inc_ts))
 
     def download_manifests(self, host_id, columnfamily=None):
         """
@@ -2238,8 +2240,8 @@ if __name__ == '__main__':
             repo_parser.add_argument('--cqlsh-pass', dest='cqlsh_pass', required=False,
                                      help='Optionally provide password to use when connecting to CQLSH')
             # Manifest options
-            repo_parser.add_argument('--retention-days', dest='retention_days', required=False, default=30,
-                                     help='Optionally provide how many days to retain manifest data (default 30)')
+            repo_parser.add_argument('--retention-days', dest='retention_days', required=False,
+                                     help='Optionally provide how many days to retain manifest data')
             # Debugging
             repo_parser.add_argument('--dry-run', dest='dry_run', action='store_true', default=False,
                                      help='Instead of running commands, print simulated commands that would have run.')
