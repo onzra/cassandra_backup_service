@@ -1367,14 +1367,17 @@ class ManifestManager(object):
 
         if 'incremental' in data:
             inc_to_delete = []
-            for inc_ts in data['incremental']:
-                inc_days_old = int(time.mktime(time.gmtime()) - time.mktime(time.gmtime(int(inc_ts)/1000)))/86400
-                if inc_days_old > self.retention_days:
-                    inc_days_old.append(inc_ts)
+            for inc_fn in data['incremental']:
+                inc_ts = from_human_readable_time(data['incremental'][inc_fn]['created'])
+                print inc_ts
+                inc_days_old = int(time.mktime(time.gmtime()) - time.mktime(time.gmtime(inc_ts))) / 86400
+                print inc_days_old
+                if inc_days_old > 30:
+                    inc_to_delete.append(inc_fn)
 
-            for inc_ts in inc_to_delete:
-                del data['incremental'][inc_ts]
-                logging.debug('Removing incremental record from manifest: {0}'.format(inc_ts))
+            for inc_fn in inc_to_delete:
+                del data['incremental'][inc_fn]
+                logging.debug('Removing incremental record from manifest: {0}'.format(inc_fn))
 
     def download_manifests(self, host_id, columnfamily=None):
         """
