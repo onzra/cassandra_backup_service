@@ -931,7 +931,7 @@ class Cassandra(object):
         cmd = [
             'cqlsh',
             '-e',
-            'DESCRIBE KEYSPACE {0}'.format(keyspace),
+            'DESCRIBE KEYSPACE "{0}"'.format(keyspace),
         ]
 
         append_cqlsh_args(cmd, args)
