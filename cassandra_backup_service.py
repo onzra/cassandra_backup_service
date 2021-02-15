@@ -965,24 +965,40 @@ class Cassandra(object):
         """
         version = get_version()
 
-        if version[0] == '2':
+        # Selecting JSON output was made available to CQL in Cassandra 2.2; earlier versions fail.
+        if version[0] == '2' and version[1] == '1':
             cmd = [
                 'cqlsh',
                 '-e',
-                'PAGING OFF; SELECT JSON keyspace_name, columnfamily_name, cf_id FROM system.schema_columnfamilies LIMIT 1000000'
+                'PAGING OFF; SELECT keyspace_name, columnfamily_name, cf_id FROM system.schema_columnfamilies LIMIT 1000000'
             ]
-        elif version[0] == '3':
-            cmd = [
-                'cqlsh',
-                '-e',
-                'PAGING OFF; SELECT JSON keyspace_name, table_name as columnfamily_name, id as cf_id FROM system_schema.tables LIMIT 1000000'
-            ]
+            append_cqlsh_args(cmd, args)
+            _, out, _ = run_command(cmd)
+            rows = []
+            for row in out.split('\n')[4:-3]:
+                keyspace_name, columnfamily_name, cf_id = row.split('|')
+                rows.append({
+                    'keyspace_name': keyspace_name.strip(),
+                    'columnfamily_name': columnfamily_name.strip(),
+                    'cf_id': cf_id.strip()
+                })
+        else:
+            if version[0] == '2':
+                cmd = [
+                    'cqlsh',
+                    '-e',
+                    'PAGING OFF; SELECT JSON keyspace_name, columnfamily_name, cf_id FROM system.schema_columnfamilies LIMIT 1000000'
+                ]
+            elif version[0] == '3':
+                cmd = [
+                    'cqlsh',
+                    '-e',
+                    'PAGING OFF; SELECT JSON keyspace_name, table_name as columnfamily_name, id as cf_id FROM system_schema.tables LIMIT 1000000'
+                ]
+            append_cqlsh_args(cmd, args)
+            _, out, _ = run_command(cmd)
 
-        append_cqlsh_args(cmd, args)
-
-        _, out, _ = run_command(cmd)
-
-        rows = [json.loads(r.strip()) for r in out.split('\n')[4:-3]]
+            rows = [json.loads(r.strip()) for r in out.split('\n')[4:-3]]
         cf_id_map = {}
         for row in rows:
             keyspace = row['keyspace_name']
