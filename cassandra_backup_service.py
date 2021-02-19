@@ -861,10 +861,6 @@ class Cassandra(object):
                 datacenter = line.split('Datacenter: ')[1]
                 self.cluster_data[datacenter] = {}
             else:
-                version = get_version()
-                if '?' in line and version[0] == '2':
-                    line = line.replace('?', '? ?')
-
                 # When a node is down the load quantity is "?" and load units is missing.
                 if '?' in line and len(line.split()) == 7:
                     line = line.replace('?', '? ?')
