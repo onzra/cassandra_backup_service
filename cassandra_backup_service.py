@@ -1090,14 +1090,14 @@ class ManifestManager(object):
     meta_path = None
     backup_repo = None
 
-    def __init__(self, cassandra, meta_path, backup_repo, retention_days):
+    def __init__(self, cassandra, meta_path, backup_repo, retention_days=None):
         """
         Init.
 
         :param Cassandra cassandra: Cassandra information resource.
         :param str meta_path: meta path.
         :param BaseBackupRepo backup_repo: backup repository class.
-        :param int retention_days: number of days to retain manifest data.
+        :param int|None retention_days: number of days to retain manifest data.
         """
         self.cassandra = cassandra
         self.meta_path = meta_path
@@ -1369,9 +1369,7 @@ class ManifestManager(object):
             inc_to_delete = []
             for inc_fn in data['incremental']:
                 inc_ts = from_human_readable_time(data['incremental'][inc_fn]['created'])
-                print inc_ts
                 inc_days_old = int(time.mktime(time.gmtime()) - time.mktime(time.gmtime(inc_ts))) / 86400
-                print inc_days_old
                 if inc_days_old > 30:
                     inc_to_delete.append(inc_fn)
 
