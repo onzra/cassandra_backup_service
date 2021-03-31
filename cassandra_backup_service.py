@@ -1368,10 +1368,17 @@ class ManifestManager(object):
         if 'incremental' in data:
             inc_to_delete = []
             for inc_fn in data['incremental']:
-                inc_ts = from_human_readable_time(data['incremental'][inc_fn]['created'])
-                inc_days_old = int(time.mktime(time.gmtime()) - time.mktime(time.gmtime(inc_ts))) / 86400
-                if inc_days_old > 30:
-                    inc_to_delete.append(inc_fn)
+                try:
+                    inc_ts = from_human_readable_time(data['incremental'][inc_fn]['created'])
+                    inc_days_old = int(time.mktime(time.gmtime()) - time.mktime(time.gmtime(inc_ts))) / 86400
+                    if inc_days_old > 30:
+                        inc_to_delete.append(inc_fn)
+                except ValueError as value_error:
+                    logging.critical(
+                        'ValueError {0} when parsing created time {1} from data: {2}'.format(
+                            value_error, data['incremental'][inc_fn]['created'], data
+                        )
+                    )
 
             for inc_fn in inc_to_delete:
                 del data['incremental'][inc_fn]
