@@ -294,13 +294,15 @@ class BaseBackupRepo(object):
         pass
 
     @abc.abstractmethod
-    def upload_incremental_backups(self, host_id, data_file_directory, filepath, incremental_directories):
+    def upload_incremental_backups(self, cassandra, data_file_directory, filepath=None, files_to_clear=None, columnfamily=None):
         """
-        Upload incremental backups to S3 for all incremental_directories in provided provided data_file_directory.
+        Upload incremental backups to S3 for all incremental_directories in provided data_file_directory.
 
-        :param str host_id: host id.
+        :param Cassandra cassandra: Cassandra resource.
         :param str data_file_directory: data file directory.
-        :param list[str] incremental_directories: list of incremental directories.
+        :param str filepath: file path of backups to upload.
+        :param list files_to_clear: list of files to clear when upload is successful.
+        :param str columnfamily: keyspace and columnfamily string to upload.
         """
         pass
 
@@ -471,16 +473,18 @@ class AWSBackupRepo(BaseBackupRepo):
             for upload_thread in upload_threads:
                 upload_thread.join()
 
-    def upload_incremental_backups(self, host_id, data_file_directory, filepath=None, columnfamily=None):
+    def upload_incremental_backups(self, cassandra, data_file_directory, filepath=None, files_to_clear=None, columnfamily=None):
         """
-        Upload incremental backups to S3 for all incremental_directories in provided provided data_file_directory.
+        Upload incremental backups to S3 for all incremental_directories in provided data_file_directory.
 
-        :param str host_id: host id.
+        :param Cassandra cassandra: Cassandra resource.
         :param str data_file_directory: data file directory.
-        :param list[str] incremental_directories: list of incremental directories.
+        :param str filepath: file path of backups to upload.
+        :param list files_to_clear: list of files to clear when upload is successful.
+        :param str columnfamily: keyspace and columnfamily string to upload.
         """
         cmd = ['aws', 's3', 'sync', data_file_directory]
-        bucket = '{0}/{1}'.format(self.s3_bucket, host_id)
+        bucket = '{0}/{1}'.format(self.s3_bucket, cassandra.host_id)
         if filepath:
             logging.info('Uploading incremental backup {0} to bucket: {1}'.format(filepath, bucket))
         else:
@@ -516,7 +520,12 @@ class AWSBackupRepo(BaseBackupRepo):
         if self.s3_sse:
             cmd.append('--sse')
 
-        run_command(cmd)
+        return_code, out, error = run_command(cmd)
+        if return_code == 0:
+            logging.info('Clearing incremental files after AWS command: {0}'.format(' '.join(cmd)))
+            cassandra.clear_incrementals(data_file_directory, files_to_clear)
+        else:
+            logging.critical('Incremental upload failed for AWS command "{0}" with error: {1}'.format(' '.join(cmd), error))
 
     def download_manifests(self, host_id, columnfamily=None):
         """
@@ -972,7 +981,7 @@ class Cassandra(object):
                 'PAGING OFF; SELECT keyspace_name, columnfamily_name, cf_id FROM system.schema_columnfamilies LIMIT 1000000'
             ]
             append_cqlsh_args(cmd, args)
-            _, out, _ = run_command(cmd)
+            _, out, _ = run_command(cmd, execute_during_dry_run=True)
             rows = []
             for row in out.split('\n')[4:-3]:
                 keyspace_name, columnfamily_name, cf_id = row.split('|')
@@ -995,7 +1004,7 @@ class Cassandra(object):
                     'PAGING OFF; SELECT JSON keyspace_name, table_name as columnfamily_name, id as cf_id FROM system_schema.tables LIMIT 1000000'
                 ]
             append_cqlsh_args(cmd, args)
-            _, out, _ = run_command(cmd)
+            _, out, _ = run_command(cmd, execute_during_dry_run=True)
 
             rows = [json.loads(r.strip()) for r in out.split('\n')[4:-3]]
         cf_id_map = {}
@@ -1066,6 +1075,7 @@ class Cassandra(object):
         :param str data_file_directory: path to Cassandra data file directory.
         :param list[str|tuple|list] incremental_files: list of strings, tuples, or lists containing path strings.
         """
+        global DRY_RUN
         for incremental_file in incremental_files:
             if isinstance(incremental_file, str):
                 # Don't delete the /backups/ directory as sstables may have been written during the upload operation.
@@ -1076,7 +1086,8 @@ class Cassandra(object):
                     continue
                 path = os.path.join(data_file_directory, incremental_file)
                 logging.info('Removing incremental path: {0}'.format(path))
-                os.remove(path)
+                if not DRY_RUN:
+                    os.remove(path)
             else:
                 self.clear_incrementals(data_file_directory, incremental_file)
 
@@ -2042,27 +2053,24 @@ class BackupManager(object):
 
         for data_file_directory in self.cassandra.data_file_directories:
             files_to_upload = []
+            files_to_clear = {}
             for path in incremental_files:
                 files_to_upload.append(path + '/')
+                files_to_clear[path + '/'] = incremental_files[path]
 
             logging.info('Preparing to upload {0} files using {1} threads.'.format(len(files_to_upload), thread_limit))
             for ti in range(0, len(files_to_upload), thread_limit):
                 files_to_upload_subset = files_to_upload[ti:ti + thread_limit]
-
                 logging.info('Starting {0} threads.'.format(len(files_to_upload_subset)))
                 upload_threads = []
                 for files_to_upload_subset_item in files_to_upload_subset:
                     upload_thread = threading.Thread(target=self.backup_repo.upload_incremental_backups, args=(
-                        self.cassandra.host_id, data_file_directory, files_to_upload_subset_item))
+                        self.cassandra, data_file_directory, files_to_upload_subset_item, files_to_clear[files_to_upload_subset_item]))
                     upload_threads.append(upload_thread)
                     upload_thread.start()
 
                 for upload_thread in upload_threads:
                     upload_thread.join()
-
-        logging.info('Clearing incremental files.')
-        for data_file_directory, incremental_files in all_incremental_files:
-            self.cassandra.clear_incrementals(data_file_directory, incremental_files.items())
 
         logging.info('Finished incremental backup after {0} seconds.'.format(int(time.time() - incremental_start)))
 
