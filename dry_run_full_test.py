@@ -1,5 +1,6 @@
 import unittest
 import json
+from os import environ
 
 
 class CassandraBackupServiceTest(unittest.TestCase):
@@ -8,7 +9,8 @@ class CassandraBackupServiceTest(unittest.TestCase):
         """
         Test that execution of a full dry run has created a system_auth/roles manifest.json file.
         """
-        with open("/var/lib/cassandra/data/meta/system_auth/roles/meta/manifest.json", "r") as f:
+        meta_path = environ['META_PATH']
+        with open("{0}/system_auth/roles/meta/manifest.json".format(meta_path), "r") as f:
             result = f.read()
 
         result_json = json.loads(result)

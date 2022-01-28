@@ -972,7 +972,7 @@ class Cassandra(object):
                 'PAGING OFF; SELECT keyspace_name, columnfamily_name, cf_id FROM system.schema_columnfamilies LIMIT 1000000'
             ]
             append_cqlsh_args(cmd, args)
-            _, out, _ = run_command(cmd)
+            _, out, _ = run_command(cmd, execute_during_dry_run=True)
             rows = []
             for row in out.split('\n')[4:-3]:
                 keyspace_name, columnfamily_name, cf_id = row.split('|')
@@ -995,7 +995,7 @@ class Cassandra(object):
                     'PAGING OFF; SELECT JSON keyspace_name, table_name as columnfamily_name, id as cf_id FROM system_schema.tables LIMIT 1000000'
                 ]
             append_cqlsh_args(cmd, args)
-            _, out, _ = run_command(cmd)
+            _, out, _ = run_command(cmd, execute_during_dry_run=True)
 
             rows = [json.loads(r.strip()) for r in out.split('\n')[4:-3]]
         cf_id_map = {}
@@ -2250,7 +2250,7 @@ if __name__ == '__main__':
                                      help='Enable verbose DEBUG level logging.')
             repo_parser.add_argument('--log-to-file', help='Redirect all logging to file. Output is not redirected.')
             repo_parser.add_argument('--meta-path', help='Path for which to store meta JSON data.',
-                                     default='/tmp/onzra_casandra_backup_service')
+                                     default='/tmp/onzra_cassandra_backup_service')
             repo_parser.add_argument('--thread-limit', type=int, help='Maximum number of concurrent threads.',
                                      default=4)
 
