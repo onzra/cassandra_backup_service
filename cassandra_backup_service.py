@@ -2206,7 +2206,7 @@ class BackupManager(object):
 
             if username is None and password is None:
                 try:
-                    config = configparser.configparser()
+                    config = configparser.ConfigParser()
                     config.read(os.path.expanduser('~')+'/.cassandra/cqlshrc')
                     username = config.get('authentication', 'username')
                     password = config.get('authentication', 'password')
