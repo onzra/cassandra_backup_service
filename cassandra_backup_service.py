@@ -18,6 +18,7 @@ __email__ = "javila@onzra.com"
 
 import abc
 import argparse
+import configparser
 import fcntl
 import glob
 import json
@@ -32,11 +33,6 @@ import tempfile
 import threading
 import time
 import yaml
-try:
-    import configparser
-except ImportError:
-    # Python2 compatibility
-    import ConfigParser as configparser
 
 
 logger = logging.getLogger()
@@ -678,7 +674,7 @@ class AWSBackupRepo(BaseBackupRepo):
         try:
             _, out, _ = run_command(cmd)
         except Exception as exception:
-            if ' exited with code 1.' in exception.message:
+            if ' exited with code 1.' in str(exception):
                 return None
         return [f.split(' ')[-1] for f in out.strip().split('\n')]
 
@@ -1847,12 +1843,12 @@ class IncrementalStatus(object):
         logging.info('BackupStatus: Download Time {0}'.format(int(time.time() - s)))
 
         try:
-            generation = cf_owner.latest_snapshot.manifest_data.keys()[0].split('-')[1]
+            generation = int(cf_owner.latest_snapshot.manifest_data.keys()[0].split('-')[1])
         except AttributeError:
             generation = 0
 
         pre = len(remote_incrementals)
-        remote_incrementals = filter(lambda n: (n[0] != '.' and n.split('-')[1] >= generation), remote_incrementals)
+        remote_incrementals = list(filter(lambda n: (n[0] != '.' and int(n.split('-')[1]) >= generation), remote_incrementals))
         post = len(remote_incrementals)
         logging.info('BackupStatus: Reduced list size from {0} to {1}: {2} less.'.format(pre, post, pre - post))
 
