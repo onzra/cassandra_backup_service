@@ -18,7 +18,7 @@ __email__ = "javila@onzra.com"
 
 import abc
 import argparse
-import ConfigParser
+import configparser
 import fcntl
 import glob
 import json
@@ -33,6 +33,7 @@ import tempfile
 import threading
 import time
 import yaml
+
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -191,6 +192,7 @@ def run_command(cmd, execute_during_dry_run=False):
     logging.debug('Run command: {0}'.format(sanitized_cmd))
     p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     out, err = p.communicate()
+    out = out.decode()
 
     if p.returncode != 0:
         # AWS sync and copy commands may return exit code 2 with the following message:
@@ -672,7 +674,7 @@ class AWSBackupRepo(BaseBackupRepo):
         try:
             _, out, _ = run_command(cmd)
         except Exception as exception:
-            if ' exited with code 1.' in exception.message:
+            if ' exited with code 1.' in str(exception):
                 return None
         return [f.split(' ')[-1] for f in out.strip().split('\n')]
 
@@ -900,7 +902,6 @@ class Cassandra(object):
     def __enumerate_keyspaces(self):
         """
         Get a dict of all keyspaces and their column families.
-
         :rtype: dict
         :return: Dictionary of keyspace: [column families]
         """
@@ -916,7 +917,7 @@ class Cassandra(object):
 
         line_start = 'Keyspace: '
         version = get_version()
-        if version[0] == '3' and version[1] != '0':
+        if (version[0] == '3' and version[1] != '0') or (version[0] == '4'):
             line_start = 'Keyspace : '
 
         for line in out.split("\n"):
@@ -997,7 +998,7 @@ class Cassandra(object):
                     '-e',
                     'PAGING OFF; SELECT JSON keyspace_name, columnfamily_name, cf_id FROM system.schema_columnfamilies LIMIT 1000000'
                 ]
-            elif version[0] == '3':
+            elif version[0] == '3' or version[0] == '4':
                 cmd = [
                     'cqlsh',
                     '-e',
@@ -1842,12 +1843,12 @@ class IncrementalStatus(object):
         logging.info('BackupStatus: Download Time {0}'.format(int(time.time() - s)))
 
         try:
-            generation = cf_owner.latest_snapshot.manifest_data.keys()[0].split('-')[1]
+            generation = int(cf_owner.latest_snapshot.manifest_data.keys()[0].split('-')[1])
         except AttributeError:
             generation = 0
 
         pre = len(remote_incrementals)
-        remote_incrementals = filter(lambda n: (n[0] != '.' and n.split('-')[1] >= generation), remote_incrementals)
+        remote_incrementals = list(filter(lambda n: (n[0] != '.' and int(n.split('-')[1]) >= generation), remote_incrementals))
         post = len(remote_incrementals)
         logging.info('BackupStatus: Reduced list size from {0} to {1}: {2} less.'.format(pre, post, pre - post))
 
@@ -2085,7 +2086,7 @@ class BackupManager(object):
         backup_status = BackupStatus(self.manifest_manager, self.backup_repo, restore_time, columnfamily)
         logging.info(backup_status.status_output())
         if not quiet:
-            print backup_status.status_output()
+            print(backup_status.status_output())
 
         if backup_status.latest_restore_timestamp():
             output = 'Restore time: {0}'.format(to_human_readable_time(backup_status.latest_restore_timestamp()))
@@ -2093,7 +2094,7 @@ class BackupManager(object):
             output = 'Restore time: N/A'
 
         logging.info(output)
-        print output
+        print(output)
 
         return backup_status
 
@@ -2201,13 +2202,13 @@ class BackupManager(object):
 
             if username is None and password is None:
                 try:
-                    config = ConfigParser.ConfigParser()
+                    config = configparser.ConfigParser()
                     config.read(os.path.expanduser('~')+'/.cassandra/cqlshrc')
                     username = config.get('authentication', 'username')
                     password = config.get('authentication', 'password')
-                except ConfigParser.NoSectionError:
+                except configparser.NoSectionError:
                     pass
-                except ConfigParser.NoOptionError:
+                except configparser.NoOptionError:
                     pass
 
             for ks in host_status.keyspace_statuses:
