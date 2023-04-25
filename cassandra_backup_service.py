@@ -285,14 +285,14 @@ class BaseBackupRepo(object):
         pass
 
     @abc.abstractmethod
-    def upload_snapshot(self, host_id, data_file_directories, snapshot_name, exclude_keyspaces=None, thread_limit=4):
+    def upload_snapshot(self, host_id, data_file_directories, snapshot_name, exclude_column_families=None, thread_limit=4):
         """
         Upload snapshot to remote storage by iterating through provided list of data_file_directories.
 
         :param str host_id: host id.
         :param list[str] data_file_directories: list of data file directories.
         :param str snapshot_name: name of snapshot.
-        :param list[str] exclude_keyspaces: list of keyspaces to exclude from backup.
+        :param list[str] exclude_column_families: list of column families to exclude from backup.
         :param int thread_limit: maximum number of concurrent threads.
         """
         pass
@@ -438,14 +438,14 @@ class AWSBackupRepo(BaseBackupRepo):
         self.s3_sse = s3_ss3
         self.s3_storage_class = s3_storage_class
 
-    def upload_snapshot(self, host_id, data_file_directories, snapshot_name, exclude_keyspaces=None, thread_limit=4):
+    def upload_snapshot(self, host_id, data_file_directories, snapshot_name, exclude_column_families=None, thread_limit=4):
         """
         Upload snapshot to remote storage by iterating through provided list of data_file_directories.
 
         :param str host_id: host id.
         :param list[str] data_file_directories: list of data file directories.
         :param str snapshot_name: name of snapshot.
-        :param list[str] exclude_keyspaces: list of keyspaces to exclude from backup.
+        :param list[str] exclude_column_families: list of column families to exclude from backup.
         :param int thread_limit: maximum number of concurrent threads.
         """
         commands_to_run = []
@@ -455,11 +455,11 @@ class AWSBackupRepo(BaseBackupRepo):
             logging.info('Uploading full backup {0} dir to bucket: {1}'.format(data_file_directory, bucket))
 
             for path in glob.glob('{0}/*/*/snapshots/{1}/'.format(data_file_directory, snapshot_name)):
-                if exclude_keyspaces is not None:
-                    keyspace_from_path = path.split('/')[1]
-                    if keyspace_from_path in exclude_keyspaces:
-                        logging.info('Skipping upload of {0} due to --exclude_keyspaces arg: {1}'.format(
-                            path, exclude_keyspaces
+                if exclude_column_families is not None:
+                    column_family_from_path = '{0}.{1}'.format(path.split('/')[1], path.split('/')[2].split('-')[0])
+                    if column_family_from_path in exclude_column_families:
+                        logging.info('Skipping upload of {0} due to --exclude-column-families arg: {1}'.format(
+                            path, exclude_column_families
                         ))
                         continue
 
@@ -1953,18 +1953,18 @@ class BackupManager(object):
         self.backup_repo = backup_repo
         self.manifest_manager = manifest_manager
 
-    def full_backup(self, columnfamily=None, exclude_keyspaces=None, thread_limit=4):
+    def full_backup(self, columnfamily=None, exclude_column_families=None, thread_limit=4):
         """
         Run a full backup (snapshot) on this cassandra node and upload it to remote storage.
 
         :param str columnfamily: optionally perform full backup on only this keyspace and columnfamily.
-        :param list[str] exclude_keyspaces: list of keyspaces to exclude from backup.
+        :param list[str] exclude_column_families: list of column families to exclude from backup.
         :param int thread_limit: maximum number of concurrent threads.
         """
         self.manifest_manager.update_host_list()
 
-        if exclude_keyspaces:
-            exclude_keyspaces = exclude_keyspaces.split(',')
+        if exclude_column_families:
+            exclude_column_families = exclude_column_families.split(',')
 
         logging.info('Flushing node.')
         self.cassandra.nodetool_flush()
@@ -1981,7 +1981,7 @@ class BackupManager(object):
                 self.manifest_manager.upload_manifests(self.cassandra.host_id)
 
                 self.backup_repo.upload_snapshot(self.cassandra.host_id, self.cassandra.data_file_directories,
-                                                 snapshot_name, exclude_keyspaces, thread_limit)
+                                                 snapshot_name, exclude_column_families, thread_limit)
             except Exception as exception:
                 logging.warning('Exception when uploading during full_backup: {0}'.format(exception))
                 raise exception
@@ -2257,8 +2257,9 @@ if __name__ == '__main__':
             columnfamily_arg = repo_parser.add_argument(
                 '--columnfamily', help='Only execute backup on specified columnfamily. Must include keyspace in the '
                                        'format: <keyspace>.<columnfamily>')
-            exclude_keyspaces_arg = repo_parser.add_argument(
-                '--exclude-keyspaces', help='Comma separated list of keyspaces to exclude from uploading on a backup.'
+            exclude_column_families_arg = repo_parser.add_argument(
+                '--exclude-column-families', help='Comma separated list of column families to exclude from uploading '
+                                                  'on a backup.'
             )
 
             # cqlsh options
@@ -2332,7 +2333,7 @@ if __name__ == '__main__':
 
     try:
         if args.action == 'full':
-            backup_manager.full_backup(args.columnfamily, args.exclude_keyspaces)
+            backup_manager.full_backup(args.columnfamily, args.exclude_column_families)
             full_status_file = '/tmp/onzra_cassandra_backup_service-full.status'
             with open(full_status_file, 'a'):
                 os.utime(full_status_file, None)
