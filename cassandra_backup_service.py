@@ -246,6 +246,9 @@ def append_cqlsh_args(cmd, args):
     if args.cqlsh_user:
         cmd.append('-p')
         cmd.append(args.cqlsh_pass)
+    if args.endpoint_url:
+        cmd.append('--endpoint-url')
+        cmd.append(args.endpoint_url)
 
 
 class BaseBackupRepo(object):
@@ -411,9 +414,12 @@ class AWSBackupRepo(BaseBackupRepo):
                             help='Use SSE for the connection to S3')
         parser.add_argument('--aws-s3-storage-class', dest='s3_storage_class', required=False,
                             help='Optionally provide storage class for S3', default='STANDARD_IA')
+        parser.add_argument('--aws-s3-endpoint-url', dest='s3_endpoint_url', required=False,
+                            help='Optionally provide password to use when connecting to CQLSH')
+
         return parser
 
-    def __init__(self, meta_path, s3_bucket, s3_metadata_bucket, s3_storage_class, s3_ss3):
+    def __init__(self, meta_path, s3_bucket, s3_metadata_bucket, s3_storage_class, s3_ss3, s3_endpoint_url):
         """
         Init.
 
@@ -422,6 +428,7 @@ class AWSBackupRepo(BaseBackupRepo):
         :param str s3_metadata_bucket: S3 metadata bucket.
         :param str s3_storage_class: S3 storage class.
         :param bool s3_ss3: S3 server side encryption flag.
+        :param str s3_endpoint_url: optionally override AWS S3 command's default URL with this value.
         """
         super(AWSBackupRepo, self).__init__(meta_path)
 
@@ -435,6 +442,7 @@ class AWSBackupRepo(BaseBackupRepo):
         self.s3_metadata_bucket = s3_metadata_bucket
         self.s3_sse = s3_ss3
         self.s3_storage_class = s3_storage_class
+        self.s3_endpoint_url = s3_endpoint_url
 
     def upload_snapshot(self, host_id, data_file_directories, snapshot_name, thread_limit=4):
         """
@@ -458,6 +466,8 @@ class AWSBackupRepo(BaseBackupRepo):
                 cmd += [path, remote_path]
                 if self.s3_sse:
                     cmd.append('--sse')
+                if self.s3_endpoint_url:
+                    cmd += ['--endpoint-url', self.s3_endpoint_url]
 
                 commands_to_run.append(cmd)
 
@@ -521,6 +531,8 @@ class AWSBackupRepo(BaseBackupRepo):
 
         if self.s3_sse:
             cmd.append('--sse')
+        if self.s3_endpoint_url:
+            cmd += ['--endpoint-url', self.s3_endpoint_url]
 
         return_code, out, error = run_command(cmd)
         if return_code == 0:
@@ -558,6 +570,8 @@ class AWSBackupRepo(BaseBackupRepo):
 
         if self.s3_sse:
             cmd.append('--sse')
+        if self.s3_endpoint_url:
+            cmd += ['--endpoint-url', self.s3_endpoint_url]
 
         run_command(cmd)
 
@@ -589,9 +603,10 @@ class AWSBackupRepo(BaseBackupRepo):
             cmd.extend(['aws', 's3', 'cp', '--recursive', local_path, s3_path])
             cmd.extend(['--exclude', '*', '--include', '*/*/meta/manifest.json'])
 
-
         if self.s3_sse:
             cmd.append('--sse')
+        if self.s3_endpoint_url:
+            cmd += ['--endpoint-url', self.s3_endpoint_url]
 
         run_command(cmd)
 
@@ -609,6 +624,9 @@ class AWSBackupRepo(BaseBackupRepo):
 
         if self.s3_sse:
             cmd.append('--sse')
+        if self.s3_endpoint_url:
+            cmd += ['--endpoint-url', self.s3_endpoint_url]
+
         run_command(cmd)
 
     def list_columnfamilies_in_keyspace(self, host_id, keyspace):
@@ -623,6 +641,9 @@ class AWSBackupRepo(BaseBackupRepo):
         """
         path = '{0}/{1}/{2}/'.format(self.s3_bucket, host_id, keyspace)
         cmd = ['aws', 's3', 'ls', path]
+        if self.s3_endpoint_url:
+            cmd += ['--endpoint-url', self.s3_endpoint_url]
+
         _, out, _ = run_command(cmd)
         return [o.split('PRE ')[1] for o in out.split('\n') if 'PRE ' in o]
 
@@ -635,6 +656,9 @@ class AWSBackupRepo(BaseBackupRepo):
         """
         path = '{0}/meta/'.format(self.s3_metadata_bucket)
         cmd = ['aws', 's3', 'ls', path]
+        if self.s3_endpoint_url:
+            cmd += ['--endpoint-url', self.s3_endpoint_url]
+
         _, out, _ = run_command(cmd)
         return [o.split(' ')[-1] for o in out.split('\n') if '_' in o]
 
@@ -654,6 +678,9 @@ class AWSBackupRepo(BaseBackupRepo):
         local_path = '{mp}/{fn}'.format(mp=self.meta_path, fn=filename)
 
         cmd = ['aws', 's3', 'cp', remote_path, local_path]
+        if self.s3_endpoint_url:
+            cmd += ['--endpoint-url', self.s3_endpoint_url]
+
         run_command(cmd)
         return local_path
 
@@ -671,6 +698,9 @@ class AWSBackupRepo(BaseBackupRepo):
         """
         path = '{0}/{1}/{2}/{3}/snapshots/{4}/'.format(self.s3_bucket, host_id, keyspace, columnfamily, snapshot_name)
         cmd = ['aws', 's3', 'ls', path]
+        if self.s3_endpoint_url:
+            cmd += ['--endpoint-url', self.s3_endpoint_url]
+
         try:
             _, out, _ = run_command(cmd)
         except Exception as exception:
@@ -691,6 +721,9 @@ class AWSBackupRepo(BaseBackupRepo):
         """
         path = '{0}/{1}/{2}/{3}/backups/'.format(self.s3_bucket, host_id, keyspace, columnfamily)
         cmd = ['aws', 's3', 'ls', path]
+        if self.s3_endpoint_url:
+            cmd += ['--endpoint-url', self.s3_endpoint_url]
+
         try:
             _, out, _ = run_command(cmd)
         except Exception as exception:
@@ -719,6 +752,8 @@ class AWSBackupRepo(BaseBackupRepo):
             cmd.extend(['--include', remote_file])
         if self.s3_sse:
             cmd.append('--sse')
+        if self.s3_endpoint_url:
+            cmd += ['--endpoint-url', self.s3_endpoint_url]
 
         run_command(cmd)
 
@@ -741,6 +776,8 @@ class AWSBackupRepo(BaseBackupRepo):
 
         if self.s3_sse:
             cmd.append('--sse')
+        if self.s3_endpoint_url:
+            cmd += ['--endpoint-url', self.s3_endpoint_url]
 
         run_command(cmd)
 
@@ -2304,7 +2341,8 @@ if __name__ == '__main__':
         meta_path = tempfile.mkdtemp()
 
     if args.repo is AWSBackupRepo:
-        repo = AWSBackupRepo(meta_path, args.s3_bucket, args.s3_metadata_bucket, args.s3_storage_class, args.s3_sse)
+        repo = AWSBackupRepo(meta_path, args.s3_bucket, args.s3_metadata_bucket, args.s3_storage_class, args.s3_sse,
+                             args.s3_endpoint_url)
 
     manifest_manager = ManifestManager(cass, meta_path, repo, args.retention_days)
     backup_manager = BackupManager(cass, repo, manifest_manager)
