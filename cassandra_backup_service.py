@@ -246,9 +246,6 @@ def append_cqlsh_args(cmd, args):
     if args.cqlsh_user:
         cmd.append('-p')
         cmd.append(args.cqlsh_pass)
-    if args.endpoint_url:
-        cmd.append('--endpoint-url')
-        cmd.append(args.endpoint_url)
 
 
 class BaseBackupRepo(object):
