@@ -412,11 +412,13 @@ class AWSBackupRepo(BaseBackupRepo):
         parser.add_argument('--aws-s3-storage-class', dest='s3_storage_class', required=False,
                             help='Optionally provide storage class for S3', default='STANDARD_IA')
         parser.add_argument('--aws-s3-endpoint-url', dest='s3_endpoint_url', required=False,
-                            help='Optionally provide password to use when connecting to CQLSH')
+                            help='Optionally provide an endpoint url for S3')
+        parser.add_argument('--aws-s3-region', dest='s3_region', required=False,
+                            help='Optionally provide a region for S3')
 
         return parser
 
-    def __init__(self, meta_path, s3_bucket, s3_metadata_bucket, s3_storage_class, s3_ss3, s3_endpoint_url):
+    def __init__(self, meta_path, s3_bucket, s3_metadata_bucket, s3_storage_class, s3_ss3, s3_endpoint_url, s3_region):
         """
         Init.
 
@@ -426,6 +428,7 @@ class AWSBackupRepo(BaseBackupRepo):
         :param str s3_storage_class: S3 storage class.
         :param bool s3_ss3: S3 server side encryption flag.
         :param str s3_endpoint_url: optionally override AWS S3 command's default URL with this value.
+        :param str s3_region: optionally specify which AWS S3 region to send this command's AWS request to.
         """
         super(AWSBackupRepo, self).__init__(meta_path)
 
@@ -440,6 +443,7 @@ class AWSBackupRepo(BaseBackupRepo):
         self.s3_sse = s3_ss3
         self.s3_storage_class = s3_storage_class
         self.s3_endpoint_url = s3_endpoint_url
+        self.s3_region = s3_region
 
     def upload_snapshot(self, host_id, data_file_directories, snapshot_name, thread_limit=4):
         """
@@ -465,6 +469,8 @@ class AWSBackupRepo(BaseBackupRepo):
                     cmd.append('--sse')
                 if self.s3_endpoint_url:
                     cmd += ['--endpoint-url', self.s3_endpoint_url]
+                if self.s3_region:
+                    cmd += ['--region', self.s3_region]
 
                 commands_to_run.append(cmd)
 
@@ -530,6 +536,8 @@ class AWSBackupRepo(BaseBackupRepo):
             cmd.append('--sse')
         if self.s3_endpoint_url:
             cmd += ['--endpoint-url', self.s3_endpoint_url]
+        if self.s3_region:
+            cmd += ['--region', self.s3_region]
 
         return_code, out, error = run_command(cmd)
         if return_code == 0:
@@ -569,6 +577,8 @@ class AWSBackupRepo(BaseBackupRepo):
             cmd.append('--sse')
         if self.s3_endpoint_url:
             cmd += ['--endpoint-url', self.s3_endpoint_url]
+        if self.s3_region:
+            cmd += ['--region', self.s3_region]
 
         run_command(cmd)
 
@@ -604,6 +614,8 @@ class AWSBackupRepo(BaseBackupRepo):
             cmd.append('--sse')
         if self.s3_endpoint_url:
             cmd += ['--endpoint-url', self.s3_endpoint_url]
+        if self.s3_region:
+            cmd += ['--region', self.s3_region]
 
         run_command(cmd)
 
@@ -623,6 +635,8 @@ class AWSBackupRepo(BaseBackupRepo):
             cmd.append('--sse')
         if self.s3_endpoint_url:
             cmd += ['--endpoint-url', self.s3_endpoint_url]
+        if self.s3_region:
+            cmd += ['--region', self.s3_region]
 
         run_command(cmd)
 
@@ -640,6 +654,8 @@ class AWSBackupRepo(BaseBackupRepo):
         cmd = ['aws', 's3', 'ls', path]
         if self.s3_endpoint_url:
             cmd += ['--endpoint-url', self.s3_endpoint_url]
+        if self.s3_region:
+            cmd += ['--region', self.s3_region]
 
         _, out, _ = run_command(cmd)
         return [o.split('PRE ')[1] for o in out.split('\n') if 'PRE ' in o]
@@ -655,6 +671,8 @@ class AWSBackupRepo(BaseBackupRepo):
         cmd = ['aws', 's3', 'ls', path]
         if self.s3_endpoint_url:
             cmd += ['--endpoint-url', self.s3_endpoint_url]
+        if self.s3_region:
+            cmd += ['--region', self.s3_region]
 
         _, out, _ = run_command(cmd)
         return [o.split(' ')[-1] for o in out.split('\n') if '_' in o]
@@ -677,6 +695,8 @@ class AWSBackupRepo(BaseBackupRepo):
         cmd = ['aws', 's3', 'cp', remote_path, local_path]
         if self.s3_endpoint_url:
             cmd += ['--endpoint-url', self.s3_endpoint_url]
+        if self.s3_region:
+            cmd += ['--region', self.s3_region]
 
         run_command(cmd)
         return local_path
@@ -697,6 +717,8 @@ class AWSBackupRepo(BaseBackupRepo):
         cmd = ['aws', 's3', 'ls', path]
         if self.s3_endpoint_url:
             cmd += ['--endpoint-url', self.s3_endpoint_url]
+        if self.s3_region:
+            cmd += ['--region', self.s3_region]
 
         try:
             _, out, _ = run_command(cmd)
@@ -720,6 +742,8 @@ class AWSBackupRepo(BaseBackupRepo):
         cmd = ['aws', 's3', 'ls', path]
         if self.s3_endpoint_url:
             cmd += ['--endpoint-url', self.s3_endpoint_url]
+        if self.s3_region:
+            cmd += ['--region', self.s3_region]
 
         try:
             _, out, _ = run_command(cmd)
@@ -751,6 +775,8 @@ class AWSBackupRepo(BaseBackupRepo):
             cmd.append('--sse')
         if self.s3_endpoint_url:
             cmd += ['--endpoint-url', self.s3_endpoint_url]
+        if self.s3_region:
+            cmd += ['--region', self.s3_region]
 
         run_command(cmd)
 
@@ -775,6 +801,8 @@ class AWSBackupRepo(BaseBackupRepo):
             cmd.append('--sse')
         if self.s3_endpoint_url:
             cmd += ['--endpoint-url', self.s3_endpoint_url]
+        if self.s3_region:
+            cmd += ['--region', self.s3_region]
 
         run_command(cmd)
 
@@ -2339,7 +2367,7 @@ if __name__ == '__main__':
 
     if args.repo is AWSBackupRepo:
         repo = AWSBackupRepo(meta_path, args.s3_bucket, args.s3_metadata_bucket, args.s3_storage_class, args.s3_sse,
-                             args.s3_endpoint_url)
+                             args.s3_endpoint_url, args.s3_region)
 
     manifest_manager = ManifestManager(cass, meta_path, repo, args.retention_days)
     backup_manager = BackupManager(cass, repo, manifest_manager)
