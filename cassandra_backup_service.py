@@ -958,7 +958,7 @@ class Cassandra(object):
         for line in out.split("\n"):
             if not line:
                 continue
-            key, value = line.split(":")
+            key, value = line.split(":", 1)
             self.nodetool_info_data[key.strip()] = value.strip()
 
     def __enumerate_keyspaces(self):
