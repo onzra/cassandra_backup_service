@@ -167,6 +167,43 @@ def filelocked(lockfile_path_or_lambda):
     return real_decorator
 
 
+def waitonfilelock(lockfile_path):
+    """
+    Decorator for a class method to wait until provided lockfile_path allows function execution.
+
+    :param str lockfile_path: path to lock file.
+    """
+    def real_decorator(function):
+        def wrapper(self, *args, **kwargs):
+            lockfile_try_start = time.time()
+            while True:
+                with open(lockfile_path, 'w') as f:
+                    try:
+                        fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                        logging.info('Lockfile {0} free.'.format(lockfile_path))
+                        break
+                    except IOError:
+                        logging.info('Waiting 5 seconds on lockfile {0}...'.format(lockfile_path))
+                        time.sleep(5)
+
+            with open(lockfile_path, 'w') as f:
+                try:
+                    fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    logging.info('Creating {0} lockfile after having waited for {1} seconds.'.format(
+                        lockfile_path, int(time.time() - lockfile_try_start)))
+                except IOError:
+                    raise FileLockedError(lockfile_path)
+
+                function(self, *args, **kwargs)
+
+                if os.path.isfile(lockfile_path):
+                    os.remove(lockfile_path)
+
+        return wrapper
+
+    return real_decorator
+
+
 def run_command(cmd, execute_during_dry_run=False):
     """
     Run command.
@@ -2015,6 +2052,7 @@ class BackupManager(object):
         self.backup_repo = backup_repo
         self.manifest_manager = manifest_manager
 
+    @waitonfilelock('/tmp/.incremental_cassandra_backup')
     def full_backup(self, columnfamily=None, exclude_column_families=None, thread_limit=4):
         """
         Run a full backup (snapshot) on this cassandra node and upload it to remote storage.
