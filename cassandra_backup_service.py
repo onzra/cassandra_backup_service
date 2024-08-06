@@ -2303,8 +2303,6 @@ if __name__ == '__main__':
                 '--columnfamily', help='Only execute backup on specified columnfamily. Must include keyspace in the '
                                        'format: <keyspace>.<columnfamily>')
             # cqlsh options
-            repo_parser.add_argument('--cqlsh-host', dest='cqlsh_host', required=False, default=socket.getfqdn(),
-                                     help='Sets the cqlsh host that will be used to run cqlsh commands')
             repo_parser.add_argument('--cqlsh-ssl', dest='cqlsh_ssl', required=False, default=False, action='store_true',
                                      help='Uses SSL when connecting to CQLSH')
             repo_parser.add_argument('--cqlsh-user', dest='cqlsh_user', required=False,
@@ -2343,6 +2341,38 @@ if __name__ == '__main__':
                 repo_parser.add_argument('--password', help='Password with restore privileges for sstableloader.')
 
     args = parser.parse_args()
+
+    # Use nodetool info to get the ID to use as the preferred host:
+    return_code, out, error = run_command(['nodetool', 'info'])
+    if return_code != 0:
+        logging.exception(f'Error executing nodetool info: {error}')
+        exit(10)
+    node_id = [line for line in out.split('\n') if line.startswith('ID')][0].split(':')[1].strip()
+
+    # Use nodetool status to get a list of Up and Normal hosts:
+    return_code, out, error = run_command(['nodetool', 'status'])
+    un_nodes = [line for line in out.split('\n') if line.startswith('UN')]
+    if not un_nodes:
+        logging.exception(f'Could not find any UN nodes using nodetool status: {out}')
+
+    # Reorganize the list of nodes so that the preferred node is first:
+    un_nodes.sort(key=lambda x: x.split()[6] != node_id)
+
+    # Iterate through nodes and execute a select * frmo system.local until a successful response:
+    cqlsh_host_found = False
+    for un_node in un_nodes:
+        args.cqlsh_host = un_node.split()[1].strip()
+        cmd = ['cqlsh', '-e', 'select * from system.local']
+        append_cqlsh_args(cmd, args)
+        return_code, out, error = run_command(cmd, execute_during_dry_run=True)
+        # When the response is successful, use this node's address as cqlsh_host and exit the loop:
+        if return_code == 0:
+            cqlsh_host_found = True
+            break
+
+    if not cqlsh_host_found:
+        logging.exception('Could not find suitable cqlsh host - please check nodetool status.')
+        exit(10)
 
     if args.dry_run:
         DRY_RUN = True
