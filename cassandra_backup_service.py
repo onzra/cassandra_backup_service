@@ -128,8 +128,20 @@ def from_human_readable_time(datetime):
     :rtype: int
     :return: integer of seconds since Epoch.
     """
-    return int(time.mktime(time.strptime(datetime, TIME_FORMAT)))
-
+    try:
+        return int(time.mktime(time.strptime(datetime, TIME_FORMAT)))
+    except ValueError as value_error:
+        if value_error.message.startswith('unconverted data remains: '):
+            error_length = len(value_error.message.replace('unconverted data remains: ', ''))
+            value = int(time.mktime(time.strptime(datetime[0:-error_length], TIME_FORMAT)))
+            logging.warning(
+                'ValueError when converting datetime {0}: {1} - attempting to convert by dropping {2} chars.'.format(
+                    datetime, value_error, error_length
+                )
+            )
+            return value
+        else:
+            raise
 
 class FileLockedError(Exception):
     """
