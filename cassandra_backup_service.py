@@ -18,7 +18,7 @@ __email__ = "javila@onzra.com"
 
 import abc
 import argparse
-import ConfigParser
+import configparser
 import fcntl
 import glob
 import json
@@ -33,6 +33,7 @@ import tempfile
 import threading
 import time
 import yaml
+
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -191,6 +192,7 @@ def run_command(cmd, execute_during_dry_run=False):
     logging.debug('Run command: {0}'.format(sanitized_cmd))
     p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     out, err = p.communicate()
+    out = out.decode()
 
     if p.returncode != 0:
         # AWS sync and copy commands may return exit code 2 with the following message:
@@ -294,13 +296,15 @@ class BaseBackupRepo(object):
         pass
 
     @abc.abstractmethod
-    def upload_incremental_backups(self, host_id, data_file_directory, filepath, incremental_directories):
+    def upload_incremental_backups(self, cassandra, data_file_directory, filepath=None, files_to_clear=None, columnfamily=None):
         """
-        Upload incremental backups to S3 for all incremental_directories in provided provided data_file_directory.
+        Upload incremental backups to S3 for all incremental_directories in provided data_file_directory.
 
-        :param str host_id: host id.
+        :param Cassandra cassandra: Cassandra resource.
         :param str data_file_directory: data file directory.
-        :param list[str] incremental_directories: list of incremental directories.
+        :param str filepath: file path of backups to upload.
+        :param list files_to_clear: list of files to clear when upload is successful.
+        :param str columnfamily: keyspace and columnfamily string to upload.
         """
         pass
 
@@ -407,9 +411,14 @@ class AWSBackupRepo(BaseBackupRepo):
                             help='Use SSE for the connection to S3')
         parser.add_argument('--aws-s3-storage-class', dest='s3_storage_class', required=False,
                             help='Optionally provide storage class for S3', default='STANDARD_IA')
+        parser.add_argument('--aws-s3-endpoint-url', dest='s3_endpoint_url', required=False,
+                            help='Optionally provide an endpoint url for S3')
+        parser.add_argument('--aws-s3-region', dest='s3_region', required=False,
+                            help='Optionally provide a region for S3')
+
         return parser
 
-    def __init__(self, meta_path, s3_bucket, s3_metadata_bucket, s3_storage_class, s3_ss3):
+    def __init__(self, meta_path, s3_bucket, s3_metadata_bucket, s3_storage_class, s3_ss3, s3_endpoint_url, s3_region):
         """
         Init.
 
@@ -418,6 +427,8 @@ class AWSBackupRepo(BaseBackupRepo):
         :param str s3_metadata_bucket: S3 metadata bucket.
         :param str s3_storage_class: S3 storage class.
         :param bool s3_ss3: S3 server side encryption flag.
+        :param str s3_endpoint_url: optionally override AWS S3 command's default URL with this value.
+        :param str s3_region: optionally specify which AWS S3 region to send this command's AWS request to.
         """
         super(AWSBackupRepo, self).__init__(meta_path)
 
@@ -431,6 +442,8 @@ class AWSBackupRepo(BaseBackupRepo):
         self.s3_metadata_bucket = s3_metadata_bucket
         self.s3_sse = s3_ss3
         self.s3_storage_class = s3_storage_class
+        self.s3_endpoint_url = s3_endpoint_url
+        self.s3_region = s3_region
 
     def upload_snapshot(self, host_id, data_file_directories, snapshot_name, thread_limit=4):
         """
@@ -454,6 +467,10 @@ class AWSBackupRepo(BaseBackupRepo):
                 cmd += [path, remote_path]
                 if self.s3_sse:
                     cmd.append('--sse')
+                if self.s3_endpoint_url:
+                    cmd += ['--endpoint-url', self.s3_endpoint_url]
+                if self.s3_region:
+                    cmd += ['--region', self.s3_region]
 
                 commands_to_run.append(cmd)
 
@@ -471,16 +488,18 @@ class AWSBackupRepo(BaseBackupRepo):
             for upload_thread in upload_threads:
                 upload_thread.join()
 
-    def upload_incremental_backups(self, host_id, data_file_directory, filepath=None, columnfamily=None):
+    def upload_incremental_backups(self, cassandra, data_file_directory, filepath=None, files_to_clear=None, columnfamily=None):
         """
-        Upload incremental backups to S3 for all incremental_directories in provided provided data_file_directory.
+        Upload incremental backups to S3 for all incremental_directories in provided data_file_directory.
 
-        :param str host_id: host id.
+        :param Cassandra cassandra: Cassandra resource.
         :param str data_file_directory: data file directory.
-        :param list[str] incremental_directories: list of incremental directories.
+        :param str filepath: file path of backups to upload.
+        :param list files_to_clear: list of files to clear when upload is successful.
+        :param str columnfamily: keyspace and columnfamily string to upload.
         """
         cmd = ['aws', 's3', 'sync', data_file_directory]
-        bucket = '{0}/{1}'.format(self.s3_bucket, host_id)
+        bucket = '{0}/{1}'.format(self.s3_bucket, cassandra.host_id)
         if filepath:
             logging.info('Uploading incremental backup {0} to bucket: {1}'.format(filepath, bucket))
         else:
@@ -515,8 +534,17 @@ class AWSBackupRepo(BaseBackupRepo):
 
         if self.s3_sse:
             cmd.append('--sse')
+        if self.s3_endpoint_url:
+            cmd += ['--endpoint-url', self.s3_endpoint_url]
+        if self.s3_region:
+            cmd += ['--region', self.s3_region]
 
-        run_command(cmd)
+        return_code, out, error = run_command(cmd)
+        if return_code == 0:
+            logging.info('Clearing incremental files after AWS command: {0}'.format(' '.join(cmd)))
+            cassandra.clear_incrementals(data_file_directory, files_to_clear)
+        else:
+            logging.critical('Incremental upload failed for AWS command "{0}" with error: {1}'.format(' '.join(cmd), error))
 
     def download_manifests(self, host_id, columnfamily=None):
         """
@@ -547,6 +575,10 @@ class AWSBackupRepo(BaseBackupRepo):
 
         if self.s3_sse:
             cmd.append('--sse')
+        if self.s3_endpoint_url:
+            cmd += ['--endpoint-url', self.s3_endpoint_url]
+        if self.s3_region:
+            cmd += ['--region', self.s3_region]
 
         run_command(cmd)
 
@@ -578,9 +610,12 @@ class AWSBackupRepo(BaseBackupRepo):
             cmd.extend(['aws', 's3', 'cp', '--recursive', local_path, s3_path])
             cmd.extend(['--exclude', '*', '--include', '*/*/meta/manifest.json'])
 
-
         if self.s3_sse:
             cmd.append('--sse')
+        if self.s3_endpoint_url:
+            cmd += ['--endpoint-url', self.s3_endpoint_url]
+        if self.s3_region:
+            cmd += ['--region', self.s3_region]
 
         run_command(cmd)
 
@@ -598,6 +633,11 @@ class AWSBackupRepo(BaseBackupRepo):
 
         if self.s3_sse:
             cmd.append('--sse')
+        if self.s3_endpoint_url:
+            cmd += ['--endpoint-url', self.s3_endpoint_url]
+        if self.s3_region:
+            cmd += ['--region', self.s3_region]
+
         run_command(cmd)
 
     def list_columnfamilies_in_keyspace(self, host_id, keyspace):
@@ -612,6 +652,11 @@ class AWSBackupRepo(BaseBackupRepo):
         """
         path = '{0}/{1}/{2}/'.format(self.s3_bucket, host_id, keyspace)
         cmd = ['aws', 's3', 'ls', path]
+        if self.s3_endpoint_url:
+            cmd += ['--endpoint-url', self.s3_endpoint_url]
+        if self.s3_region:
+            cmd += ['--region', self.s3_region]
+
         _, out, _ = run_command(cmd)
         return [o.split('PRE ')[1] for o in out.split('\n') if 'PRE ' in o]
 
@@ -624,6 +669,11 @@ class AWSBackupRepo(BaseBackupRepo):
         """
         path = '{0}/meta/'.format(self.s3_metadata_bucket)
         cmd = ['aws', 's3', 'ls', path]
+        if self.s3_endpoint_url:
+            cmd += ['--endpoint-url', self.s3_endpoint_url]
+        if self.s3_region:
+            cmd += ['--region', self.s3_region]
+
         _, out, _ = run_command(cmd)
         return [o.split(' ')[-1] for o in out.split('\n') if '_' in o]
 
@@ -643,6 +693,11 @@ class AWSBackupRepo(BaseBackupRepo):
         local_path = '{mp}/{fn}'.format(mp=self.meta_path, fn=filename)
 
         cmd = ['aws', 's3', 'cp', remote_path, local_path]
+        if self.s3_endpoint_url:
+            cmd += ['--endpoint-url', self.s3_endpoint_url]
+        if self.s3_region:
+            cmd += ['--region', self.s3_region]
+
         run_command(cmd)
         return local_path
 
@@ -660,10 +715,15 @@ class AWSBackupRepo(BaseBackupRepo):
         """
         path = '{0}/{1}/{2}/{3}/snapshots/{4}/'.format(self.s3_bucket, host_id, keyspace, columnfamily, snapshot_name)
         cmd = ['aws', 's3', 'ls', path]
+        if self.s3_endpoint_url:
+            cmd += ['--endpoint-url', self.s3_endpoint_url]
+        if self.s3_region:
+            cmd += ['--region', self.s3_region]
+
         try:
             _, out, _ = run_command(cmd)
         except Exception as exception:
-            if ' exited with code 1.' in exception.message:
+            if ' exited with code 1.' in str(exception):
                 return None
         return [f.split(' ')[-1] for f in out.strip().split('\n')]
 
@@ -680,6 +740,11 @@ class AWSBackupRepo(BaseBackupRepo):
         """
         path = '{0}/{1}/{2}/{3}/backups/'.format(self.s3_bucket, host_id, keyspace, columnfamily)
         cmd = ['aws', 's3', 'ls', path]
+        if self.s3_endpoint_url:
+            cmd += ['--endpoint-url', self.s3_endpoint_url]
+        if self.s3_region:
+            cmd += ['--region', self.s3_region]
+
         try:
             _, out, _ = run_command(cmd)
         except Exception as exception:
@@ -708,6 +773,10 @@ class AWSBackupRepo(BaseBackupRepo):
             cmd.extend(['--include', remote_file])
         if self.s3_sse:
             cmd.append('--sse')
+        if self.s3_endpoint_url:
+            cmd += ['--endpoint-url', self.s3_endpoint_url]
+        if self.s3_region:
+            cmd += ['--region', self.s3_region]
 
         run_command(cmd)
 
@@ -730,6 +799,10 @@ class AWSBackupRepo(BaseBackupRepo):
 
         if self.s3_sse:
             cmd.append('--sse')
+        if self.s3_endpoint_url:
+            cmd += ['--endpoint-url', self.s3_endpoint_url]
+        if self.s3_region:
+            cmd += ['--region', self.s3_region]
 
         run_command(cmd)
 
@@ -885,13 +958,12 @@ class Cassandra(object):
         for line in out.split("\n"):
             if not line:
                 continue
-            key, value = line.split(":")
+            key, value = line.split(":", 1)
             self.nodetool_info_data[key.strip()] = value.strip()
 
     def __enumerate_keyspaces(self):
         """
         Get a dict of all keyspaces and their column families.
-
         :rtype: dict
         :return: Dictionary of keyspace: [column families]
         """
@@ -907,7 +979,7 @@ class Cassandra(object):
 
         line_start = 'Keyspace: '
         version = get_version()
-        if version[0] == '3' and version[1] != '0':
+        if (version[0] == '3' and version[1] != '0') or (version[0] == '4'):
             line_start = 'Keyspace : '
 
         for line in out.split("\n"):
@@ -972,7 +1044,7 @@ class Cassandra(object):
                 'PAGING OFF; SELECT keyspace_name, columnfamily_name, cf_id FROM system.schema_columnfamilies LIMIT 1000000'
             ]
             append_cqlsh_args(cmd, args)
-            _, out, _ = run_command(cmd)
+            _, out, _ = run_command(cmd, execute_during_dry_run=True)
             rows = []
             for row in out.split('\n')[4:-3]:
                 keyspace_name, columnfamily_name, cf_id = row.split('|')
@@ -988,14 +1060,14 @@ class Cassandra(object):
                     '-e',
                     'PAGING OFF; SELECT JSON keyspace_name, columnfamily_name, cf_id FROM system.schema_columnfamilies LIMIT 1000000'
                 ]
-            elif version[0] == '3':
+            elif version[0] == '3' or version[0] == '4':
                 cmd = [
                     'cqlsh',
                     '-e',
                     'PAGING OFF; SELECT JSON keyspace_name, table_name as columnfamily_name, id as cf_id FROM system_schema.tables LIMIT 1000000'
                 ]
             append_cqlsh_args(cmd, args)
-            _, out, _ = run_command(cmd)
+            _, out, _ = run_command(cmd, execute_during_dry_run=True)
 
             rows = [json.loads(r.strip()) for r in out.split('\n')[4:-3]]
         cf_id_map = {}
@@ -1066,6 +1138,7 @@ class Cassandra(object):
         :param str data_file_directory: path to Cassandra data file directory.
         :param list[str|tuple|list] incremental_files: list of strings, tuples, or lists containing path strings.
         """
+        global DRY_RUN
         for incremental_file in incremental_files:
             if isinstance(incremental_file, str):
                 # Don't delete the /backups/ directory as sstables may have been written during the upload operation.
@@ -1076,7 +1149,8 @@ class Cassandra(object):
                     continue
                 path = os.path.join(data_file_directory, incremental_file)
                 logging.info('Removing incremental path: {0}'.format(path))
-                os.remove(path)
+                if not DRY_RUN:
+                    os.remove(path)
             else:
                 self.clear_incrementals(data_file_directory, incremental_file)
 
@@ -1332,6 +1406,9 @@ class ManifestManager(object):
         :rtype: str
         :return: path of manifest file that was saved.
         """
+        if self.retention_days:
+            self.manifest_data_retention_pruning(manifest)
+
         manifest['updated'] = to_human_readable_time()
 
         if self.retention_days:
@@ -1368,6 +1445,35 @@ class ManifestManager(object):
         os.rename(manifest_temp_file_path, manifest_file_path)
 
         return manifest_file_path
+
+    def manifest_data_retention_pruning(self, data):
+        """
+        Prune provided data to only values within the defined self.retention_days time range.
+
+        :param dict data: manifest data.
+        """
+        if 'full' in data:
+            full_to_delete = []
+            for full_ts in data['full']:
+                full_days_old = int(time.mktime(time.gmtime()) - time.mktime(time.gmtime(int(full_ts)/1000)))/86400
+                if full_days_old > self.retention_days:
+                    full_to_delete.append(full_ts)
+
+            for full_ts in full_to_delete:
+                del data['full'][full_ts]
+                logging.debug('Removing full record from manifest: {0}'.format(full_ts))
+
+        if 'incremental' in data:
+            inc_to_delete = []
+            for inc_fn in data['incremental']:
+                inc_ts = from_human_readable_time(data['incremental'][inc_fn]['created'])
+                inc_days_old = int(time.mktime(time.gmtime()) - time.mktime(time.gmtime(inc_ts))) / 86400
+                if inc_days_old > 30:
+                    inc_to_delete.append(inc_fn)
+
+            for inc_fn in inc_to_delete:
+                del data['incremental'][inc_fn]
+                logging.debug('Removing incremental record from manifest: {0}'.format(inc_fn))
 
     def download_manifests(self, host_id, columnfamily=None):
         """
@@ -1823,12 +1929,12 @@ class IncrementalStatus(object):
         logging.info('BackupStatus: Download Time {0}'.format(int(time.time() - s)))
 
         try:
-            generation = cf_owner.latest_snapshot.manifest_data.keys()[0].split('-')[1]
+            generation = int(cf_owner.latest_snapshot.manifest_data.keys()[0].split('-')[1])
         except AttributeError:
             generation = 0
 
         pre = len(remote_incrementals)
-        remote_incrementals = filter(lambda n: (n[0] != '.' and n.split('-')[1] >= generation), remote_incrementals)
+        remote_incrementals = list(filter(lambda n: (n[0] != '.' and int(n.split('-')[1]) >= generation), remote_incrementals))
         post = len(remote_incrementals)
         logging.info('BackupStatus: Reduced list size from {0} to {1}: {2} less.'.format(pre, post, pre - post))
 
@@ -2034,27 +2140,24 @@ class BackupManager(object):
 
         for data_file_directory in self.cassandra.data_file_directories:
             files_to_upload = []
+            files_to_clear = {}
             for path in incremental_files:
                 files_to_upload.append(path + '/')
+                files_to_clear[path + '/'] = incremental_files[path]
 
             logging.info('Preparing to upload {0} files using {1} threads.'.format(len(files_to_upload), thread_limit))
             for ti in range(0, len(files_to_upload), thread_limit):
                 files_to_upload_subset = files_to_upload[ti:ti + thread_limit]
-
                 logging.info('Starting {0} threads.'.format(len(files_to_upload_subset)))
                 upload_threads = []
                 for files_to_upload_subset_item in files_to_upload_subset:
                     upload_thread = threading.Thread(target=self.backup_repo.upload_incremental_backups, args=(
-                        self.cassandra.host_id, data_file_directory, files_to_upload_subset_item))
+                        self.cassandra, data_file_directory, files_to_upload_subset_item, files_to_clear[files_to_upload_subset_item]))
                     upload_threads.append(upload_thread)
                     upload_thread.start()
 
                 for upload_thread in upload_threads:
                     upload_thread.join()
-
-        logging.info('Clearing incremental files.')
-        for data_file_directory, incremental_files in all_incremental_files:
-            self.cassandra.clear_incrementals(data_file_directory, incremental_files.items())
 
         logging.info('Finished incremental backup after {0} seconds.'.format(int(time.time() - incremental_start)))
 
@@ -2069,7 +2172,7 @@ class BackupManager(object):
         backup_status = BackupStatus(self.manifest_manager, self.backup_repo, restore_time, columnfamily)
         logging.info(backup_status.status_output())
         if not quiet:
-            print backup_status.status_output()
+            print(backup_status.status_output())
 
         if backup_status.latest_restore_timestamp():
             output = 'Restore time: {0}'.format(to_human_readable_time(backup_status.latest_restore_timestamp()))
@@ -2077,7 +2180,7 @@ class BackupManager(object):
             output = 'Restore time: N/A'
 
         logging.info(output)
-        print output
+        print(output)
 
         return backup_status
 
@@ -2185,13 +2288,13 @@ class BackupManager(object):
 
             if username is None and password is None:
                 try:
-                    config = ConfigParser.ConfigParser()
+                    config = configparser.ConfigParser()
                     config.read(os.path.expanduser('~')+'/.cassandra/cqlshrc')
                     username = config.get('authentication', 'username')
                     password = config.get('authentication', 'password')
-                except ConfigParser.NoSectionError:
+                except configparser.NoSectionError:
                     pass
-                except ConfigParser.NoOptionError:
+                except configparser.NoOptionError:
                     pass
 
             for ks in host_status.keyspace_statuses:
@@ -2232,7 +2335,9 @@ if __name__ == '__main__':
                                      help='Optionally provide username to use when connecting to CQLSH')
             repo_parser.add_argument('--cqlsh-pass', dest='cqlsh_pass', required=False,
                                      help='Optionally provide password to use when connecting to CQLSH')
-
+            # Manifest options
+            repo_parser.add_argument('--retention-days', dest='retention_days', required=False,
+                                     help='Optionally provide how many days to retain manifest data')
             # Debugging
             repo_parser.add_argument('--dry-run', dest='dry_run', action='store_true', default=False,
                                      help='Instead of running commands, print simulated commands that would have run.')
@@ -2291,7 +2396,8 @@ if __name__ == '__main__':
         meta_path = tempfile.mkdtemp()
 
     if args.repo is AWSBackupRepo:
-        repo = AWSBackupRepo(meta_path, args.s3_bucket, args.s3_metadata_bucket, args.s3_storage_class, args.s3_sse)
+        repo = AWSBackupRepo(meta_path, args.s3_bucket, args.s3_metadata_bucket, args.s3_storage_class, args.s3_sse,
+                             args.s3_endpoint_url, args.s3_region)
 
     manifest_manager = ManifestManager(cass, meta_path, repo, retention_days)
     backup_manager = BackupManager(cass, repo, manifest_manager)
