@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 """
 TODO:
 - Add verification of content (MD5 local, upload manifest)
