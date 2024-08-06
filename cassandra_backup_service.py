@@ -1226,15 +1226,16 @@ class ManifestManager(object):
     cassandra = None
     meta_path = None
     backup_repo = None
+    retention_days = None
 
     def __init__(self, cassandra, meta_path, backup_repo, retention_days=None):
         """
         Init.
 
         :param Cassandra cassandra: Cassandra information resource.
-        :param str meta_path: meta path.
+        :param str meta_path: path to directory which holds meta files.
         :param BaseBackupRepo backup_repo: backup repository class.
-        :param int|None retention_days: number of days to retain manifest data.
+        :param int retention_days: only store sstables within range of this many retention days.
         """
         self.cassandra = cassandra
         self.meta_path = meta_path
@@ -1311,12 +1312,13 @@ class ManifestManager(object):
 
         return manifest
 
-    def update_snapshot_manifests(self, snapshot_name, columnfamily=None):
+    def update_snapshot_manifests(self, snapshot_name, columnfamily=None, retention_days=None):
         """
         Insert snapshot data into manifest files using provided snapshot name.
 
         :param: str snapshot_name: snapshot name.
         :param str columnfamily: optionally perform full backup on only this keyspace and columnfamily.
+        :param int retention_days: optionally only keep sstables that were within this amount of days in the manifest.
         """
         if columnfamily is not None:
             logging.info('Updating full file list manifests for {0} for snapshot {1}.'.format(
@@ -1471,6 +1473,28 @@ class ManifestManager(object):
             self.manifest_data_retention_pruning(manifest)
 
         manifest['updated'] = to_human_readable_time()
+
+        if self.retention_days:
+            retention_cutoff = int(time.time()) - (self.retention_days * 86000)
+
+            filtered_incrementals = {}
+            for incremental in manifest['incremental']:
+                created_timestamp = from_human_readable_time(manifest['incremental'][incremental]['created'])
+                if created_timestamp >= retention_cutoff:
+                    filtered_incrementals[incremental] = manifest['incremental'][incremental]
+            manifest['incremental'] = filtered_incrementals
+
+            filtered_full = {}
+            for full in manifest['full']:
+                for full_item in manifest['full'][full]:
+
+                    created_timestamp = from_human_readable_time(manifest['full'][full][full_item]['created'])
+                    if created_timestamp >= retention_cutoff:
+                        if full not in filtered_incrementals:
+                            filtered_full[full] = {}
+
+                        filtered_full[full][full_item] = manifest['full'][full][full_item]
+            manifest['full'] = filtered_full
 
         manifest_file_path = self.get_manifest_file_path(keyspace, columnfamily)
 
@@ -2397,6 +2421,10 @@ if __name__ == '__main__':
             repo_parser.add_argument('--thread-limit', type=int, help='Maximum number of concurrent threads.',
                                      default=4)
 
+            if action in ('full', 'incremental'):
+                repo_parser.add_argument('--retention-days', type=int, help='Only keep sstables in manifest that are '
+                                                                            'within a range of this many days.')
+
             if action == 'status':
                 columnfamily_arg.required = True
                 repo_parser.add_argument('--restore-time', help='UTC timestamp in seconds to get status up to.')
@@ -2462,9 +2490,11 @@ if __name__ == '__main__':
     if args.meta_path:
         meta_path = args.meta_path
 
+    retention_days = None
     if args.action in ('full', 'incremental'):
         cass = Cassandra(args)
         meta_path = cass.meta_path
+        retention_days = args.retention_days
     elif args.action in ('status', 'restore'):
         cass = None
         meta_path = tempfile.mkdtemp()
@@ -2473,7 +2503,7 @@ if __name__ == '__main__':
         repo = AWSBackupRepo(meta_path, args.s3_bucket, args.s3_metadata_bucket, args.s3_storage_class, args.s3_sse,
                              args.s3_endpoint_url, args.s3_region)
 
-    manifest_manager = ManifestManager(cass, meta_path, repo, args.retention_days)
+    manifest_manager = ManifestManager(cass, meta_path, repo, retention_days)
     backup_manager = BackupManager(cass, repo, manifest_manager)
 
     try:
