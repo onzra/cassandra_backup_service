@@ -2349,10 +2349,6 @@ if __name__ == '__main__':
             repo_parser.add_argument('--thread-limit', type=int, help='Maximum number of concurrent threads.',
                                      default=4)
 
-            if action in ('full', 'incremental'):
-                repo_parser.add_argument('--retention-days', type=int, help='Only keep sstables in manifest that are '
-                                                                            'within a range of this many days.')
-
             if action == 'status':
                 columnfamily_arg.required = True
                 repo_parser.add_argument('--restore-time', help='UTC timestamp in seconds to get status up to.')
