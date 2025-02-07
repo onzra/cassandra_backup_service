@@ -1,0 +1,12 @@
+Source: cassandra_backup_service
+Maintainer: ONZRA <info@onzra.com>
+Section: python
+Priority: optional
+Build-Depends: python3 (>= 3.8), debhelper (>= 9)
+Standards-Version: 3.9.5
+
+Package: cassandra_backup_service
+Architecture: any
+Depends: python3 (>= 3.8)
+Description: Save and restore incremental and full snapshot backups of Cassandra keyspaces and columnfamilies to AWS.
+
