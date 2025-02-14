@@ -514,7 +514,7 @@ class AWSBackupRepo(BaseBackupRepo):
 
             for path in glob.glob('{0}/*/*/snapshots/{1}/'.format(data_file_directory, snapshot_name)):
                 if exclude_column_families is not None:
-                    column_family_from_path = '{0}.{1}'.format(path.split('/')[1], path.split('/')[2].split('-')[0])
+                    column_family_from_path = '{0}.{1}'.format(path.split('/')[4], path.split('/')[5].split('-')[0])
                     if column_family_from_path in exclude_column_families:
                         logging.info('Skipping upload of {0} due to --exclude-column-families arg: {1}'.format(
                             path, exclude_column_families
