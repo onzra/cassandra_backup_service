@@ -2440,6 +2440,11 @@ if __name__ == '__main__':
 
     args = parser.parse_args()
 
+    if args.log_to_file:
+        logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s', filename=args.log_to_file)
+    else:
+        logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s')
+
     # Use nodetool info to get the ID to use as the preferred host:
     return_code, out, error = run_command(['nodetool', 'info'])
     if return_code != 0:
@@ -2477,11 +2482,6 @@ if __name__ == '__main__':
 
     if args.debug:
         logger.setLevel(logging.DEBUG)
-
-    if args.log_to_file:
-        logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s', filename=args.log_to_file)
-    else:
-        logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s')
 
     if args.meta_path:
         meta_path = args.meta_path
