@@ -181,3 +181,16 @@ Files:
 - 94e99e4c-b2c0-4ed3-b191-494f43efe964
   - backup_service_test/incremental_test/lb-1-big-Data.db (created 2019-01-24 00:43:54)
 ```
+
+## Testing with Vagrant
+
+Executing `vagrant up` using the provided [Vagrantfile](Vagrantfile) will set up a Centos 7 Virtualbox and execute a
+basic dry run of the script. This can be useful for quickly creating an initial simple environment for testing or for
+confirming changes to the script during development.
+
+The [Vagrantfile](Vagrantfile) will install Cassandra, execute the script, then test the result of the script using
+[dry_run_full_test.py](dry_run_full_test.py).
+
+The test is limited to Vagrant's provisioning process so running a new test will require a `vagrant destroy` of the
+machine for a new test run. Alternatively, the commands to test from the [Vagrantfile](Vagrantfile) can be run manually
+from the Vagrant box by shelling into the machine with `vagrant ssh` after it is up.
