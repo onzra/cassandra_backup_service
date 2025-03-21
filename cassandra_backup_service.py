@@ -1478,6 +1478,8 @@ class ManifestManager(object):
             retention_cutoff = int(time.time()) - (self.retention_days * 86000)
 
             filtered_incrementals = {}
+            if 'incremental' not in manifest:
+                manifest['incremental'] = {}
             for incremental in manifest['incremental']:
                 created_timestamp = from_human_readable_time(manifest['incremental'][incremental]['created'])
                 if created_timestamp >= retention_cutoff:
@@ -1485,6 +1487,8 @@ class ManifestManager(object):
             manifest['incremental'] = filtered_incrementals
 
             filtered_full = {}
+            if 'full' not in manifest:
+                manifest['full'] = {}
             for full in manifest['full']:
                 for full_item in manifest['full'][full]:
 
