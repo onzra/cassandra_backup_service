@@ -2,7 +2,7 @@
 
 cp debian/changelog debian/changelog.save
 
-VERSION=6.2.3-rev1
+VERSION=6.3.0-rev1
 
 # update the changelog file with the package version
 dch -v $VERSION -m auto-build
