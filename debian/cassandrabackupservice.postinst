@@ -1,0 +1,11 @@
+#!/bin/sh
+set -e
+
+# Source debconf library.
+. /usr/share/debconf/confmodule
+
+## set permissions for executable
+c_b_s="/opt/onzra/cassandra_backup_service/cassandra_backup_service.py"
+test -f $c_b_s && chmod ugo+r,og-w,+x $c_b_s
+
+exit 0
