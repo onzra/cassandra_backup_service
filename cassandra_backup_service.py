@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 """
 TODO:
 - Add verification of content (MD5 local, upload manifest)
@@ -128,8 +128,20 @@ def from_human_readable_time(datetime):
     :rtype: int
     :return: integer of seconds since Epoch.
     """
-    return int(time.mktime(time.strptime(datetime, TIME_FORMAT)))
-
+    try:
+        return int(time.mktime(time.strptime(datetime, TIME_FORMAT)))
+    except ValueError as value_error:
+        if value_error.message.startswith('unconverted data remains: '):
+            error_length = len(value_error.message.replace('unconverted data remains: ', ''))
+            value = int(time.mktime(time.strptime(datetime[0:-error_length], TIME_FORMAT)))
+            logging.warning(
+                'ValueError when converting datetime {0}: {1} - attempting to convert by dropping {2} chars.'.format(
+                    datetime, value_error, error_length
+                )
+            )
+            return value
+        else:
+            raise
 
 class FileLockedError(Exception):
     """
@@ -154,6 +166,43 @@ def filelocked(lockfile_path_or_lambda):
             with open(lockfile_path, 'w') as f:
                 try:
                     fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except IOError:
+                    raise FileLockedError(lockfile_path)
+
+                function(self, *args, **kwargs)
+
+                if os.path.isfile(lockfile_path):
+                    os.remove(lockfile_path)
+
+        return wrapper
+
+    return real_decorator
+
+
+def waitonfilelock(lockfile_path):
+    """
+    Decorator for a class method to wait until provided lockfile_path allows function execution.
+
+    :param str lockfile_path: path to lock file.
+    """
+    def real_decorator(function):
+        def wrapper(self, *args, **kwargs):
+            lockfile_try_start = time.time()
+            while True:
+                with open(lockfile_path, 'w') as f:
+                    try:
+                        fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                        logging.info('Lockfile {0} free.'.format(lockfile_path))
+                        break
+                    except IOError:
+                        logging.info('Waiting 5 seconds on lockfile {0}...'.format(lockfile_path))
+                        time.sleep(5)
+
+            with open(lockfile_path, 'w') as f:
+                try:
+                    fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    logging.info('Creating {0} lockfile after having waited for {1} seconds.'.format(
+                        lockfile_path, int(time.time() - lockfile_try_start)))
                 except IOError:
                     raise FileLockedError(lockfile_path)
 
@@ -285,13 +334,15 @@ class BaseBackupRepo(object):
         pass
 
     @abc.abstractmethod
-    def upload_snapshot(self, host_id, data_file_directories, snapshot_name):
+    def upload_snapshot(self, host_id, data_file_directories, snapshot_name, exclude_column_families=None, thread_limit=4):
         """
         Upload snapshot to remote storage by iterating through provided list of data_file_directories.
 
         :param str host_id: host id.
         :param list[str] data_file_directories: list of data file directories.
         :param str snapshot_name: name of snapshot.
+        :param list[str] exclude_column_families: list of column families to exclude from backup.
+        :param int thread_limit: maximum number of concurrent threads.
         """
         pass
 
@@ -445,13 +496,15 @@ class AWSBackupRepo(BaseBackupRepo):
         self.s3_endpoint_url = s3_endpoint_url
         self.s3_region = s3_region
 
-    def upload_snapshot(self, host_id, data_file_directories, snapshot_name, thread_limit=4):
+    def upload_snapshot(self, host_id, data_file_directories, snapshot_name, exclude_column_families=None, thread_limit=4):
         """
         Upload snapshot to remote storage by iterating through provided list of data_file_directories.
 
         :param str host_id: host id.
         :param list[str] data_file_directories: list of data file directories.
         :param str snapshot_name: name of snapshot.
+        :param list[str] exclude_column_families: list of column families to exclude from backup.
+        :param int thread_limit: maximum number of concurrent threads.
         """
         commands_to_run = []
         for data_file_directory in data_file_directories:
@@ -460,6 +513,14 @@ class AWSBackupRepo(BaseBackupRepo):
             logging.info('Uploading full backup {0} dir to bucket: {1}'.format(data_file_directory, bucket))
 
             for path in glob.glob('{0}/*/*/snapshots/{1}/'.format(data_file_directory, snapshot_name)):
+                if exclude_column_families is not None:
+                    column_family_from_path = '{0}.{1}'.format(path.split('/')[4], path.split('/')[5].split('-')[0])
+                    if column_family_from_path in exclude_column_families:
+                        logging.info('Skipping upload of {0} due to --exclude-column-families arg: {1}'.format(
+                            path, exclude_column_families
+                        ))
+                        continue
+
                 remote_path = '{0}/{1}'.format(bucket, path.replace(data_file_directory, ''))
                 cmd = ['aws', 's3', 'cp', '--recursive']
                 if self.s3_storage_class:
@@ -723,8 +784,9 @@ class AWSBackupRepo(BaseBackupRepo):
         try:
             _, out, _ = run_command(cmd)
         except Exception as exception:
-            if ' exited with code 1.' in str(exception):
-                return None
+            if ' exited with code 1.' in exception.message:
+                logging.warning('List snapshot files returning empty list due to code 1 for path: {0}'.format(path))
+                return []
         return [f.split(' ')[-1] for f in out.strip().split('\n')]
 
     def list_backup_files(self, host_id, keyspace, columnfamily):
@@ -749,7 +811,8 @@ class AWSBackupRepo(BaseBackupRepo):
             _, out, _ = run_command(cmd)
         except Exception as exception:
             if ' exited with code 1.' in exception.message:
-                return None
+                logging.warning('List backup files returning empty list due to code 1 for path: {0}'.format(path))
+                return []
 
         return [f.split(' ')[-1] for f in out.strip().split('\n')]
 
@@ -1415,6 +1478,8 @@ class ManifestManager(object):
             retention_cutoff = int(time.time()) - (self.retention_days * 86000)
 
             filtered_incrementals = {}
+            if 'incremental' not in manifest:
+                manifest['incremental'] = {}
             for incremental in manifest['incremental']:
                 created_timestamp = from_human_readable_time(manifest['incremental'][incremental]['created'])
                 if created_timestamp >= retention_cutoff:
@@ -1422,6 +1487,8 @@ class ManifestManager(object):
             manifest['incremental'] = filtered_incrementals
 
             filtered_full = {}
+            if 'full' not in manifest:
+                manifest['full'] = {}
             for full in manifest['full']:
                 for full_item in manifest['full'][full]:
 
@@ -2027,13 +2094,19 @@ class BackupManager(object):
         self.backup_repo = backup_repo
         self.manifest_manager = manifest_manager
 
-    def full_backup(self, columnfamily=None, thread_limit=4):
+    @waitonfilelock('/tmp/.incremental_cassandra_backup')
+    def full_backup(self, columnfamily=None, exclude_column_families=None, thread_limit=4):
         """
         Run a full backup (snapshot) on this cassandra node and upload it to remote storage.
 
         :param str columnfamily: optionally perform full backup on only this keyspace and columnfamily.
+        :param list[str] exclude_column_families: list of column families to exclude from backup.
+        :param int thread_limit: maximum number of concurrent threads.
         """
         self.manifest_manager.update_host_list()
+
+        if exclude_column_families:
+            exclude_column_families = exclude_column_families.split(',')
 
         logging.info('Flushing node.')
         self.cassandra.nodetool_flush()
@@ -2050,7 +2123,7 @@ class BackupManager(object):
                 self.manifest_manager.upload_manifests(self.cassandra.host_id)
 
                 self.backup_repo.upload_snapshot(self.cassandra.host_id, self.cassandra.data_file_directories,
-                                                 snapshot_name, thread_limit)
+                                                 snapshot_name, exclude_column_families, thread_limit)
             except Exception as exception:
                 logging.warning('Exception when uploading during full_backup: {0}'.format(exception))
                 raise exception
@@ -2326,9 +2399,12 @@ if __name__ == '__main__':
             columnfamily_arg = repo_parser.add_argument(
                 '--columnfamily', help='Only execute backup on specified columnfamily. Must include keyspace in the '
                                        'format: <keyspace>.<columnfamily>')
+            exclude_column_families_arg = repo_parser.add_argument(
+                '--exclude-column-families', help='Comma separated list of column families to exclude from uploading '
+                                                  'on a backup.'
+            )
+
             # cqlsh options
-            repo_parser.add_argument('--cqlsh-host', dest='cqlsh_host', required=False, default=socket.getfqdn(),
-                                     help='Sets the cqlsh host that will be used to run cqlsh commands')
             repo_parser.add_argument('--cqlsh-ssl', dest='cqlsh_ssl', required=False, default=False, action='store_true',
                                      help='Uses SSL when connecting to CQLSH')
             repo_parser.add_argument('--cqlsh-user', dest='cqlsh_user', required=False,
@@ -2336,7 +2412,7 @@ if __name__ == '__main__':
             repo_parser.add_argument('--cqlsh-pass', dest='cqlsh_pass', required=False,
                                      help='Optionally provide password to use when connecting to CQLSH')
             # Manifest options
-            repo_parser.add_argument('--retention-days', dest='retention_days', required=False,
+            repo_parser.add_argument('--retention-days', type=int, dest='retention_days', required=False,
                                      help='Optionally provide how many days to retain manifest data')
             # Debugging
             repo_parser.add_argument('--dry-run', dest='dry_run', action='store_true', default=False,
@@ -2368,16 +2444,48 @@ if __name__ == '__main__':
 
     args = parser.parse_args()
 
+    if args.log_to_file:
+        logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s', filename=args.log_to_file)
+    else:
+        logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s')
+
+    # Use nodetool info to get the ID to use as the preferred host:
+    return_code, out, error = run_command(['nodetool', 'info'])
+    if return_code != 0:
+        logging.exception(f'Error executing nodetool info: {error}')
+        exit(10)
+    node_id = [line for line in out.split('\n') if line.startswith('ID')][0].split(':')[1].strip()
+
+    # Use nodetool status to get a list of Up and Normal hosts:
+    return_code, out, error = run_command(['nodetool', 'status'])
+    un_nodes = [line for line in out.split('\n') if line.startswith('UN')]
+    if not un_nodes:
+        logging.exception(f'Could not find any UN nodes using nodetool status: {out}')
+
+    # Reorganize the list of nodes so that the preferred node is first:
+    un_nodes.sort(key=lambda x: x.split()[6] != node_id)
+
+    # Iterate through nodes and execute a select * frmo system.local until a successful response:
+    cqlsh_host_found = False
+    for un_node in un_nodes:
+        args.cqlsh_host = un_node.split()[1].strip()
+        cmd = ['cqlsh', '-e', 'select * from system.local']
+        append_cqlsh_args(cmd, args)
+        return_code, out, error = run_command(cmd, execute_during_dry_run=True)
+        # When the response is successful, use this node's address as cqlsh_host and exit the loop:
+        if return_code == 0:
+            cqlsh_host_found = True
+            break
+
+    if not cqlsh_host_found:
+        logging.exception('Could not find suitable cqlsh host - please check nodetool status.')
+        exit(10)
+
     if args.dry_run:
         DRY_RUN = True
 
     if args.debug:
         logger.setLevel(logging.DEBUG)
-
-    if args.log_to_file:
-        logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s', filename=args.log_to_file)
-    else:
-        logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s')
 
     if args.meta_path:
         meta_path = args.meta_path
@@ -2400,7 +2508,7 @@ if __name__ == '__main__':
 
     try:
         if args.action == 'full':
-            backup_manager.full_backup(args.columnfamily)
+            backup_manager.full_backup(args.columnfamily, args.exclude_column_families)
             full_status_file = '/tmp/onzra_cassandra_backup_service-full.status'
             with open(full_status_file, 'a'):
                 os.utime(full_status_file, None)
