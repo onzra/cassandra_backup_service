@@ -2421,7 +2421,7 @@ if __name__ == '__main__':
                                      help='Enable verbose DEBUG level logging.')
             repo_parser.add_argument('--log-to-file', help='Redirect all logging to file. Output is not redirected.')
             repo_parser.add_argument('--meta-path', help='Path for which to store meta JSON data.',
-                                     default='/tmp/onzra_casandra_backup_service')
+                                     default='/tmp/onzra_cassandra_backup_service')
             repo_parser.add_argument('--thread-limit', type=int, help='Maximum number of concurrent threads.',
                                      default=4)
 
