@@ -2508,7 +2508,7 @@ if __name__ == '__main__':
 
     try:
         if args.action == 'full':
-            backup_manager.full_backup(args.columnfamily, args.exclude_column_families)
+            backup_manager.full_backup(args.columnfamily, args.exclude_column_families, args.thread_limit)
             full_status_file = '/tmp/onzra_cassandra_backup_service-full.status'
             with open(full_status_file, 'a'):
                 os.utime(full_status_file, None)
