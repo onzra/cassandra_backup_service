@@ -1207,9 +1207,6 @@ class Cassandra(object):
                 # Don't delete the /backups/ directory as sstables may have been written during the upload operation.
                 if incremental_file.endswith('/backups'):
                     continue
-                # Don't delete the index files directory.
-                if incremental_file.endswith('_idx/'):
-                    continue
                 path = os.path.join(data_file_directory, incremental_file)
                 logging.info('Removing incremental path: {0}'.format(path))
                 if not DRY_RUN:
@@ -2153,7 +2150,7 @@ class BackupManager(object):
                         incremental_files[root] = []
                     filename = os.path.join(root, file)
                     incremental_files[root].append(filename)
-            if '/backups' in root and '/.' in root and root.endswith('_idx'):
+            if '/backups' in root and '/.' in root:
                 root = root[len(data_file_directory):] + '/'
                 for file in files:
                     if root not in incremental_files.keys():
