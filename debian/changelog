@@ -1,5 +1,13 @@
+cassandrabackupservice (6.3.1-rev1) unstable; urgency=low
+
+  * fixing full backup to properly use thread limit arg.
+  * updating logic to remove secondary indices and hidden files during cleanup.
+
+ -- ONZRA <info@onzra.com>  Thu, 22 May 2025 10:58:08 -0500
+
 cassandrabackupservice (6.3.0-rev1) unstable; urgency=low
 
   * source package creation
 
  -- ONZRA <info@onzra.com>  Fri, 8 Feb 2025 11:52:34 -0500
+
