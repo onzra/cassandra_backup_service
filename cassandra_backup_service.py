@@ -235,8 +235,13 @@ def run_command(cmd, execute_during_dry_run=False):
         sanitized_cmd[pindex + 1] = '********'
 
     if cmd[0] == 'nodetool' and NODETOOL_JMX_CREDENTIALS:
-        cmd += ['-u', NODETOOL_JMX_CREDENTIALS[0], '-pw', NODETOOL_JMX_CREDENTIALS[1]]
+        new_cmd = ['nodetool']
+        sanitized_cmd = ['nodetool']
+        new_cmd += ['-u', NODETOOL_JMX_CREDENTIALS[0], '-pw', NODETOOL_JMX_CREDENTIALS[1]]
         sanitized_cmd += ['-u', NODETOOL_JMX_CREDENTIALS[0], '-pw', '********']
+        new_cmd.extend(cmd[1:])
+        sanitized_cmd.extend(cmd[1:])
+        cmd=new_cmd
 
     if DRY_RUN:
         logging.info('$ {0}'.format(' '.join(sanitized_cmd)))
