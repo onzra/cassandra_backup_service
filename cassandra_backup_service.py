@@ -42,6 +42,7 @@ CASSANDRA_CONFIG_FILE = '/etc/cassandra/conf/cassandra.yaml'
 DRY_RUN = False
 TIME_FORMAT = '%Y-%m-%d %H:%M:%S'
 RESTORE_DIR_FILELOCK = None
+NODETOOL_JMX_CREDENTIALS = None
 
 
 def glob_optimize_backup_paths(backup_paths):
@@ -226,12 +227,21 @@ def run_command(cmd, execute_during_dry_run=False):
     :rtype: tuple
     :return: (return code, stdout, stderr)
     """
-    global DRY_RUN
+    global DRY_RUN, NODETOOL_JMX_CREDENTIALS
 
     sanitized_cmd = list(cmd)
     if 'cqlsh' in cmd and '-p' in cmd:
         pindex = cmd.index('-p')
         sanitized_cmd[pindex + 1] = '********'
+
+    if cmd[0] == 'nodetool' and NODETOOL_JMX_CREDENTIALS:
+        new_cmd = ['nodetool']
+        sanitized_cmd = ['nodetool']
+        new_cmd += ['-u', NODETOOL_JMX_CREDENTIALS[0], '-pw', NODETOOL_JMX_CREDENTIALS[1]]
+        sanitized_cmd += ['-u', NODETOOL_JMX_CREDENTIALS[0], '-pw', '********']
+        new_cmd.extend(cmd[1:])
+        sanitized_cmd.extend(cmd[1:])
+        cmd=new_cmd
 
     if DRY_RUN:
         logging.info('$ {0}'.format(' '.join(sanitized_cmd)))
@@ -2411,6 +2421,10 @@ if __name__ == '__main__':
             # Manifest options
             repo_parser.add_argument('--retention-days', type=int, dest='retention_days', required=False,
                                      help='Optionally provide how many days to retain manifest data')
+            # nodetool options
+            repo_parser.add_argument("--jmx-user", default=None, help="Username to use for nodetool commands")
+            repo_parser.add_argument("--jmx-pass", default=None, help="Password to use for nodetool commands")
+
             # Debugging
             repo_parser.add_argument('--dry-run', dest='dry_run', action='store_true', default=False,
                                      help='Instead of running commands, print simulated commands that would have run.')
@@ -2445,6 +2459,9 @@ if __name__ == '__main__':
         logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s', filename=args.log_to_file)
     else:
         logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s')
+
+    if args.jmx_user and args.jmx_pass:
+        NODETOOL_JMX_CREDENTIALS = (args.jmx_user, args.jmx_pass)
 
     # Use nodetool info to get the ID to use as the preferred host:
     return_code, out, error = run_command(['nodetool', 'info'])
